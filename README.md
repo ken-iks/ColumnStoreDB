@@ -71,7 +71,7 @@ You should see:
 
 >`origin    git@code.harvard.edu:<your_username>/cs165-project.git (push)`
 
->`upstream    git@code.harvard.edu:uts797/cs165-2022-starter-code.git (fetch)`
+>`upstream    git@code.harvard.edu:uts797/cs165-2023-starter-code.git (fetch)`
 
 >`upstream    DISABLE (push)`
 
