@@ -243,6 +243,11 @@ def createTestEight(dataTable, dataSizeTableTwo, approxSelectivity):
 	selectValLess = np.random.randint(int(-1 * (dataSizeTableTwo/2)), highestHighVal)
 	selectValGreater = selectValLess + offset
 	output_file.write('-- Min\n')
+	output_file.write('-- SELECT min(col1) FROM tbl2;\n')
+	output_file.write('a1=min(db1.tbl2.col1)\n')
+	output_file.write('print(a1)\n')
+	output_file.write('--\n')
+	output_file.write('--\n')
 	output_file.write('-- SELECT min(col1) FROM tbl2 WHERE col1 >= {} AND col1 < {};\n'.format(selectValLess, selectValGreater))
 	output_file.write('s1=select(db1.tbl2.col1,{},{})\n'.format(selectValLess, selectValGreater))
 	output_file.write('f1=fetch(db1.tbl2.col1,s1)\n')
@@ -256,6 +261,11 @@ def createTestEight(dataTable, dataSizeTableTwo, approxSelectivity):
 	output_file.write('--\n')
 	output_file.write('--\n')
 	output_file.write('-- Max\n')
+	output_file.write('-- SELECT max(col1) FROM tbl2;\n')
+	output_file.write('a2=max(db1.tbl2.col1)\n')
+	output_file.write('print(a2)\n')
+	output_file.write('--\n')
+	output_file.write('--\n')
 	output_file.write('-- SELECT max(col1) FROM tbl2 WHERE col1 >= {} AND col1 < {};\n'.format(selectValLess, selectValGreater))
 	output_file.write('s21=select(db1.tbl2.col1,{},{})\n'.format(selectValLess, selectValGreater))
 	output_file.write('f21=fetch(db1.tbl2.col1,s21)\n')
@@ -273,10 +283,14 @@ def createTestEight(dataTable, dataSizeTableTwo, approxSelectivity):
 	output2 = dataTable[dfSelectMaskGT & dfSelectMaskLT]['col2'].min()
 	output3 = dataTable[dfSelectMaskGT & dfSelectMaskLT]['col1'].max()
 	output4 = dataTable[dfSelectMaskGT & dfSelectMaskLT]['col2'].max()
+	exp_output_file.write(str(int(dataTable['col1'].min())))
+	exp_output_file.write('\n')
 	exp_output_file.write(str(output1) + '\n')
 	exp_output_file.write(str(output2) + '\n')
 	exp_output_file.write(str(output3) + '\n')
 	exp_output_file.write(str(output4) + '\n')
+	exp_output_file.write(str(int(dataTable['col1'].max())))
+	exp_output_file.write('\n')
 	data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
 def createTestNine(dataTable, dataSizeTableTwo, approxSelectivity):
@@ -292,6 +306,22 @@ def createTestNine(dataTable, dataSizeTableTwo, approxSelectivity):
 	selectValLess2 = np.random.randint(int(-1 * (dataSizeTableTwo/2)), highestHighVal)
 	selectValGreater1 = selectValLess1 + offset
 	selectValGreater2 = selectValLess2 + offset
+
+
+	# First query
+	output_file.write('-- SELECT min(col2), max(col3), sum(col3-col2) FROM tbl2 WHERE (col1 >= {} AND col1 < {}) AND (col2 >= {} AND col2 < {});\n'.format(selectValLess1, selectValGreater1, selectValLess2, selectValGreater2))
+	output_file.write('s1=select(db1.tbl2.col1,{},{})\n'.format(selectValLess1, selectValGreater1))
+	output_file.write('sf1=fetch(db1.tbl2.col2,s1)\n')
+	output_file.write('s2=select(s1,sf1,{},{})\n'.format(selectValLess2, selectValGreater2))
+	output_file.write('f2=fetch(db1.tbl2.col2,s2)\n')
+	output_file.write('f3=fetch(db1.tbl2.col3,s2)\n')
+	output_file.write('out11=min(f2)\n')
+	output_file.write('out12=max(f3)\n')
+	output_file.write('sub32=sub(f3,f2)\n')
+	output_file.write('out13=sum(sub32)\n')
+	output_file.write('print(out11,out12,out13)\n\n\n')
+
+	# Second query
 	output_file.write('-- SELECT avg(col1+col2), min(col2), max(col3), avg(col3-col2), sum(col3-col2) FROM tbl2 WHERE (col1 >= {} AND col1 < {}) AND (col2 >= {} AND col2 < {});\n'.format(selectValLess1, selectValGreater1, selectValLess2, selectValGreater2))
 	output_file.write('s1=select(db1.tbl2.col1,{},{})\n'.format(selectValLess1, selectValGreater1))
 	output_file.write('sf1=fetch(db1.tbl2.col2,s1)\n')
@@ -316,18 +346,26 @@ def createTestNine(dataTable, dataSizeTableTwo, approxSelectivity):
 	totalMask = dfSelectMaskGT1 & dfSelectMaskLT1 & dfSelectMaskGT2 & dfSelectMaskLT2
 	col1pluscol2 = dataTable[totalMask]['col1'] + dataTable[totalMask]['col2']
 	col3minuscol2 = dataTable[totalMask]['col3'] - dataTable[totalMask]['col2']
+	
 	# round any mean
 	output1 = np.round(col1pluscol2.mean(), PLACES_TO_ROUND)
-	if (math.isnan(output1)):
-		exp_output_file.write('0.00,')
-	else:
-		exp_output_file.write('{:0.2f},'.format(output1))
-
 	output2 = dataTable[totalMask]['col2'].min()
 	output3 = dataTable[totalMask]['col3'].max()
 	# round any mean
 	output4 = np.round(col3minuscol2.mean(), PLACES_TO_ROUND)
 	output5 = col3minuscol2.sum()
+
+	exp_output_file.write(str(output2) + ',')
+	exp_output_file.write(str(output3) + ',')
+	if (math.isnan(output5)):
+		exp_output_file.write('0,')
+	else:
+		exp_output_file.write('{}\n'.format(output5))
+
+	if (math.isnan(output1)):
+		exp_output_file.write('0.00,')
+	else:
+		exp_output_file.write('{:0.2f},'.format(output1))
 	exp_output_file.write(str(output2) + ',')
 	exp_output_file.write(str(output3) + ',')
 	if (math.isnan(output4)):
