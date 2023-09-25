@@ -10,6 +10,8 @@ import pandas as pd
 
 import data_gen_utils
 
+import shutil
+
 # note this is the base path where we store the data files we generate
 TEST_BASE_DIR = "/cs165/generated_data"
 
@@ -253,6 +255,48 @@ def createTests16And17(dataTable, dataSize):
         exp_output_file17.write('\n\n')
     data_gen_utils.closeFileHandles(output_file16, exp_output_file16)
     data_gen_utils.closeFileHandles(output_file17, exp_output_file17)
+    return query_starts
+
+
+def createTests18And19(dataTable, dataSize, query_starts):
+    # 1 / 1000 tuples should qualify on average. This is so that most time is spent on scans & not fetches or prints
+    offset = np.max([1, int(dataSize/5000)])
+    output_file18, exp_output_file18 = data_gen_utils.openFileHandles(18, TEST_DIR=TEST_BASE_DIR)
+    output_file19, exp_output_file19 = data_gen_utils.openFileHandles(19, TEST_DIR=TEST_BASE_DIR)
+    output_file18.write('--\n')
+    output_file18.write('-- Queries for 18 and 19 are single-core versions of Queries for 16 and 17.\n')
+    output_file18.write('-- Query in SQL:\n')
+    output_file18.write('-- 100 Queries of the type:\n')
+    output_file18.write('-- SELECT col3 FROM tbl3_batch WHERE col2 >= _ AND col2 < _;\n')
+    output_file18.write('--\n')
+    output_file19.write('--\n')
+    output_file19.write('-- Same queries with single-core execution\n')
+    output_file19.write('-- Queries for 18 and 19 are single-core versions of Queries for 16 and 17.\n')
+    output_file19.write('--\n')
+    output_file18.write('single_core()\n')
+    output_file19.write('single_core()\n')
+    output_file19.write('batch_queries()\n')
+    for i in range(100):
+        output_file18.write('s{}=select(db1.tbl3_batch.col2,{},{})\n'.format(i, query_starts[i], query_starts[i] + offset))
+        output_file19.write('s{}=select(db1.tbl3_batch.col2,{},{})\n'.format(i, query_starts[i], query_starts[i] + offset))
+    output_file19.write('batch_execute()\n')
+    for i in range(100):
+        output_file18.write('f{}=fetch(db1.tbl3_batch.col3,s{})\n'.format(i,i))
+        output_file19.write('f{}=fetch(db1.tbl3_batch.col3,s{})\n'.format(i,i))
+    output_file19.write('single_core_execute()\n')
+    output_file18.write('single_core_execute()\n')
+    for i in range(100):
+        output_file18.write('print(f{})\n'.format(i))
+        output_file19.write('print(f{})\n'.format(i))
+    for i in range(100):
+        dfSelectMask = (dataTable['col2'] >= query_starts[i]) & ((dataTable['col2'] < (query_starts[i] + offset)))
+        output = dataTable[dfSelectMask]['col3']
+        exp_output_file18.write(data_gen_utils.outputPrint(output))
+        exp_output_file18.write('\n\n')
+        exp_output_file19.write(data_gen_utils.outputPrint(output))
+        exp_output_file19.write('\n\n')
+    data_gen_utils.closeFileHandles(output_file18, exp_output_file18)
+    data_gen_utils.closeFileHandles(output_file19, exp_output_file19)
 
 
 def generateMilestoneTwoFiles(dataSize, randomSeed):
@@ -264,7 +308,8 @@ def generateMilestoneTwoFiles(dataSize, randomSeed):
     createTestThirteen(dataTable)
     createTestFourteen(dataTable)
     createTestFifteen(dataTable)
-    createTests16And17(dataTable, dataSize)
+    query_starts = createTests16And17(dataTable, dataSize)
+    createTests18And19(dataTable, dataSize, query_starts)
 
 def main(argv):
     global TEST_BASE_DIR
