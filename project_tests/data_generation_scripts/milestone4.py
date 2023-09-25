@@ -92,9 +92,9 @@ def generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, dataSizeSel
     outputSelectTable2.to_csv(outputFile5, sep=',', index=False, header=header_line_sel2, lineterminator='\n')
     return outputFactTable, outputDimTable1, outputDimTable2, outputSelectTable1, outputSelectTable2
 
-def createTest45():
+def createTest33():
     # prelude
-    output_file, exp_output_file = data_gen_utils.openFileHandles(45, TEST_DIR=TEST_BASE_DIR)
+    output_file, exp_output_file = data_gen_utils.openFileHandles(33, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- Creates tables for join tests\n')
     output_file.write('-- without any indexes\n')
     output_file.write('create(tbl,"tbl5_fact",db1,4)\n')
@@ -130,8 +130,8 @@ def createTest45():
     # no expected results
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
-def createTest46(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFact, selectivityDim2):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(46, TEST_DIR=TEST_BASE_DIR)
+def createTest34(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFact, selectivityDim2):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(34, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- First join test - nested-loop. Select + Join + aggregation\n')   
     output_file.write('-- Performs the join using nested loops\n')
     output_file.write('-- Do this only on reasonable sized tables! (O(n^2))\n')
@@ -168,8 +168,8 @@ def createTest46(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFa
     else:
         exp_output_file.write('{}\n'.format(col3ValuesSum))
 
-def createTest47(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFact, selectivityDim2):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(47, TEST_DIR=TEST_BASE_DIR)
+def createTest35(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFact, selectivityDim2):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(35, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- First join test - hash. Select + Join + aggregation\n')
     output_file.write('-- Performs the join using hashing\n')
     output_file.write('-- Query in SQL:\n')
@@ -203,8 +203,8 @@ def createTest47(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFa
     else:
         exp_output_file.write('{}\n'.format(col3ValuesSum))
 
-def createTest48(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFact, selectivityDim1):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(48, TEST_DIR=TEST_BASE_DIR)
+def createTest36(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFact, selectivityDim1):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(36, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- Join test 2 - nested-loop. Select + Join + aggregation\n')
     output_file.write('-- Performs the join using nested loops\n')
     output_file.write('-- Do this only on reasonable sized tables! (O(n^2))\n')
@@ -239,8 +239,8 @@ def createTest48(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFa
     else:
         exp_output_file.write('{:0.2f}\n'.format(col1ValuesMean))
 
-def createTest49(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFact, selectivityDim1):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(49, TEST_DIR=TEST_BASE_DIR)
+def createTest37(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFact, selectivityDim1):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(37, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- join test 2 - hash. Select + Join + aggregation\n')
     output_file.write('-- Performs the join using hashing\n')
     output_file.write('-- Query in SQL:\n')
@@ -274,8 +274,8 @@ def createTest49(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFa
     else:
         exp_output_file.write('{:0.2f}\n'.format(col1ValuesMean))
 
-def createTest50(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFact, selectivityDim2):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(50, TEST_DIR=TEST_BASE_DIR)
+def createTest38(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFact, selectivityDim2):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(38, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- join test 3 - hashing many-one with larger selectivities.\n')
     output_file.write('-- Select + Join + aggregation\n')
     output_file.write('-- Performs the join using hashing\n')
@@ -310,8 +310,8 @@ def createTest50(factTable, dimTable2, dataSizeFact, dataSizeDim2, selectivityFa
     else:
         exp_output_file.write('{}\n'.format(col3ValuesSum))
 
-def createTest51(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFact, selectivityDim1):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(51, TEST_DIR=TEST_BASE_DIR)
+def createTest39(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFact, selectivityDim1):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(39, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- join test 4 - hashing many-many with larger selectivities.\n')
     output_file.write('-- Select + Join + aggregation\n')
     output_file.write('-- Query in SQL:\n')
@@ -345,7 +345,19 @@ def createTest51(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFa
     else:
         exp_output_file.write('{:0.2f}\n'.format(col1ValuesMean))
     
-def _perf_test_helper(output_file, dataSizeSelect, selectivity_1, selectivity_2, join_type: str):
+def generateMilestoneFourFiles(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianParam, numDistinctElements, randomSeed=47):
+    np.random.seed(randomSeed)
+    factTable, dimTable1, dimTable2 = generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianParam, numDistinctElements)  
+    createTest33()
+    # test many to 1 joins
+    createTest34(factTable, dimTable2, dataSizeFact, dataSizeDim2, 0.15, 0.15)
+    createTest35(factTable, dimTable2, dataSizeFact, dataSizeDim2, 0.15, 0.15)
+    # test many to many joins
+    createTest36(factTable, dimTable1, dataSizeFact, dataSizeDim1, 0.15, 0.15)
+    createTest37(factTable, dimTable1, dataSizeFact, dataSizeDim1, 0.15, 0.15)
+    # test both joins with much larger selectivities. This should mostly test speed.
+    createTest38(factTable, dimTable2, dataSizeFact, dataSizeDim2, 0.8, 0.8)
+    createTest39(factTable, dimTable1, dataSizeFact, dataSizeDim1, 0.8, 0.8)
 
     # dataSizeSelect / 5 == range of values.
     upper_bound_1 = int(selectivity_1 * (dataSizeSelect / 5))

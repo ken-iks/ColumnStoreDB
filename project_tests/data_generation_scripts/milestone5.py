@@ -34,9 +34,9 @@ def generateDataMilestone5(dataSize):
     return outputTable
     
 
-def createTest60(dataTable):
+def createTest40(dataTable):
     # prelude
-    output_file, exp_output_file = data_gen_utils.openFileHandles(60, TEST_DIR=TEST_BASE_DIR)
+    output_file, exp_output_file = data_gen_utils.openFileHandles(40, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- Correctness test: Do inserts in tbl5.\n')
     output_file.write('--\n')
     output_file.write('-- Let table tbl5 have a secondary index (col2) and a clustered index (col3), so, all should be maintained when we insert new data.\n')
@@ -89,8 +89,8 @@ def createTest60(dataTable):
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
     return dataTable
 
-def createTest61(dataTable, approxSelectivity):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(61, TEST_DIR=TEST_BASE_DIR)
+def createTest41(dataTable, approxSelectivity):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(41, TEST_DIR=TEST_BASE_DIR)
     dataSize = len(dataTable)
     offset = int(approxSelectivity * dataSize)
     highestHighVal = int((dataSize/2) - offset)
@@ -128,8 +128,8 @@ def createTest61(dataTable, approxSelectivity):
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
 
-def createTests62(dataTable):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(62, TEST_DIR=TEST_BASE_DIR)
+def createTests42(dataTable):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(42, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- Correctness test: Update values\n')
     output_file.write('--\n')
     output_file.write('-- UPDATE tbl5 SET col1 = -10 WHERE col1 = -1;\n')
@@ -169,8 +169,8 @@ def createTests62(dataTable):
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
     return dataTable
 
-def createTest63(dataTable):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(63, TEST_DIR=TEST_BASE_DIR)
+def createTest43(dataTable):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(43, TEST_DIR=TEST_BASE_DIR)
     selectValLess = np.random.randint(-200, -100)
     selectValGreater = np.random.randint(10, 100)
     output_file.write('-- Correctness test: Run query after inserts and updates\n')
@@ -187,8 +187,8 @@ def createTest63(dataTable):
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
 
-def createTest64(dataTable):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(64, TEST_DIR=TEST_BASE_DIR)
+def createTest44(dataTable):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(44, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- Correctness test: Delete values and run queries after inserts, updates, and deletes\n')
     output_file.write('--\n')
     output_file.write('-- DELETE FROM tbl5 WHERE col1 = -10;\n')
@@ -289,8 +289,8 @@ def createRandomSelects(dataTable, numberOfQueries, output_file, exp_output_file
             exp_output_file.write('\n')
         
 
-def createTest65(dataTable):
-    output_file, exp_output_file = data_gen_utils.openFileHandles(65, TEST_DIR=TEST_BASE_DIR)
+def createTest45(dataTable):
+    output_file, exp_output_file = data_gen_utils.openFileHandles(45, TEST_DIR=TEST_BASE_DIR)
     output_file.write('-- Scalability test: A large number of inserts, deletes and updates, followed by a number of queries\n')
     output_file.write('--\n')
     dataTable = createRandomInserts(dataTable, 100, output_file)
@@ -304,12 +304,12 @@ def createTest65(dataTable):
 def generateMilestoneFiveFiles(dataSize,randomSeed=47):
     np.random.seed(randomSeed)
     dataTable = generateDataMilestone5(dataSize)
-    dataTable = createTest60(dataTable)
-    createTest61(dataTable, 0.1)
-    dataTable = createTests62(dataTable)
-    createTest63(dataTable)
-    dataTable = createTest64(dataTable)
-    createTest65(dataTable)
+    dataTable = createTest40(dataTable)
+    createTest41(dataTable, 0.1)
+    dataTable = createTests42(dataTable)
+    createTest43(dataTable)
+    dataTable = createTest44(dataTable)
+    createTest45(dataTable)
 
 def main(argv):
     global TEST_BASE_DIR

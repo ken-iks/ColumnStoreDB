@@ -118,7 +118,6 @@ def createTests22And23(dataTable, dataSize):
     output_file23, exp_output_file23 = data_gen_utils.openFileHandles(23, TEST_DIR=TEST_BASE_DIR)
     output_file22.write('--\n')
     output_file22.write('-- Query in SQL:\n')
-
     # selectivity = 
     offset = np.max([1, int(dataSize/5000)])
     offset2 = np.max([2, int(dataSize/2500)])
@@ -476,8 +475,6 @@ def generateMilestoneThreeFiles(dataSize, randomSeed=47):
     createTest30()
     createTest31(dataTable, dataSize)
     createTest32(dataTable, dataSize)
-    createTest33To38(dataTable, dataSize)
-    createTest39To44(dataTable, dataSize)
 
 def main(argv):
     global TEST_BASE_DIR
