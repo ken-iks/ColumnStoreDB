@@ -36,7 +36,7 @@ def generateDataMilestone2(dataSize):
     outputTable['col1'] = np.random.randint(0,1000, size = (dataSize))
     outputTable['col4'] = np.random.randint(0,10000, size = (dataSize))
     outputTable['col4'] = outputTable['col4'] + outputTable['col1']
-    outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, line_terminator='\n')
+    outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, lineterminator='\n')
     return outputTable
 
 def createTestTen():

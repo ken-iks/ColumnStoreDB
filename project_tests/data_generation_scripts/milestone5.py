@@ -30,7 +30,7 @@ def generateDataMilestone5(dataSize):
     outputTable['col2'] = np.random.randint(0,1000, size = (dataSize))
     outputTable['col3'] = np.random.randint(0,10000, size = (dataSize))
     outputTable['col4'] = np.random.randint(0,10000, size = (dataSize))
-    outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, line_terminator='\n')
+    outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, lineterminator='\n')
     return outputTable
     
 
@@ -71,11 +71,19 @@ def createTest38(dataTable):
     output_file.write('relational_insert(db1.tbl5,-5,-55,-555,-2222)\n')
     #output_file.write('shutdown\n')
     # update dataTable
-    dataTable = dataTable.append({"col1":-1, "col2":-11, "col3": -111, "col4": -1111}, ignore_index = True)
-    dataTable = dataTable.append({"col1":-2, "col2":-22, "col3": -222, "col4": -2222}, ignore_index = True)
-    dataTable = dataTable.append({"col1":-3, "col2":-33, "col3": -333, "col4": -2222}, ignore_index = True)
-    dataTable = dataTable.append({"col1":-4, "col2":-44, "col3": -444, "col4": -2222}, ignore_index = True)
-    dataTable = dataTable.append({"col1":-5, "col2":-55, "col3": -555, "col4": -2222}, ignore_index = True)
+    appendTable = pd.DataFrame( [
+        [-1, -11, -111, -1111],
+        [-2, -22, -222, -2222],
+        [-3, -33, -333, -3333],
+        [-4, -44, -444, -4444],
+        [-5, -55, -555, -5555]
+    ], columns=['col1', 'col2', 'col3', 'col4'])
+    dataTable = pd.concat([dataTable, appendTable ], ignore_index=True, sort=False)
+    # dataTable = dataTable.append({"col1":-1, "col2":-11, "col3": -111, "col4": -1111}, ignore_index = True)
+    # dataTable = dataTable.append({"col1":-2, "col2":-22, "col3": -222, "col4": -2222}, ignore_index = True)
+    # dataTable = dataTable.append({"col1":-3, "col2":-33, "col3": -333, "col4": -2222}, ignore_index = True)
+    # dataTable = dataTable.append({"col1":-4, "col2":-44, "col3": -444, "col4": -2222}, ignore_index = True)
+    # dataTable = dataTable.append({"col1":-5, "col2":-55, "col3": -555, "col4": -2222}, ignore_index = True)
     
     # no expected results
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
@@ -257,7 +265,8 @@ def createRandomInserts(dataTable, numberOfInserts, output_file):
         col4Val = np.random.randint(0,10000)
         output_file.write('-- INSERT INTO tbl5 VALUES ({},{},{},{});\n'.format(col1Val, col2Val, col3Val, col4Val))
         output_file.write('relational_insert(db1.tbl5,{},{},{},{})\n'.format(col1Val, col2Val, col3Val, col4Val))
-        dataTable = dataTable.append({"col1":col1Val, "col2":col2Val, "col3": col3Val, "col4": col4Val}, ignore_index = True)
+        dataTable = pd.concat([dataTable, pd.DataFrame([[col1Val, col2Val, col3Val, col4Val]], columns=['col1', 'col2', 'col3', 'col4'])], ignore_index=True, sort=False)
+        # dataTable = dataTable.append({"col1":col1Val, "col2":col2Val, "col3": col3Val, "col4": col4Val}, ignore_index = True)
         output_file.write('--\n')
     return dataTable
 

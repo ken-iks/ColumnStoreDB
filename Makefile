@@ -70,7 +70,8 @@ run_mile: prep_build
 startcontainer:
 	$(eval DOCKER_CONT_ID := $(shell docker container run \
 		-v $(BASE_DIR)/src:/cs165/src \
-		-v $(testdir):/cs165/staff_test:ro \
+		-v $(testdir):/cs165/staff_test \
+		-v $(BASE_DIR)/project_tests:/cs165/project_tests \
 		-v $(BASE_DIR)/infra_scripts:/cs165/infra_scripts \
 		-v $(BASE_DIR)/student_outputs:/cs165/student_outputs \
 		-v $(outputdir):/cs165/infra_outputs \

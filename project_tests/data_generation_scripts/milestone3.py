@@ -55,9 +55,9 @@ def generateDataMilestone3(dataSize):
     outputTable.loc[mask1, 'col2'] = frequentVal1
     outputTable.loc[mask2, 'col2'] = frequentVal2
     outputTable['col4'] = outputTable['col4'] + outputTable['col1']
-    outputTable.to_csv(outputFile_ctrl, sep=',', index=False, header=header_line_ctrl, line_terminator='\n')
-    outputTable.to_csv(outputFile_btree, sep=',', index=False, header=header_line_btree, line_terminator='\n')
-    outputTable.to_csv(outputFile_clustered_btree, sep=',', index=False, header=header_line_clustered_btree, line_terminator='\n')
+    outputTable.to_csv(outputFile_ctrl, sep=',', index=False, header=header_line_ctrl, lineterminator='\n')
+    outputTable.to_csv(outputFile_btree, sep=',', index=False, header=header_line_btree, lineterminator='\n')
+    outputTable.to_csv(outputFile_clustered_btree, sep=',', index=False, header=header_line_clustered_btree, lineterminator='\n')
     return frequentVal1, frequentVal2, outputTable
 
 def createTest18():

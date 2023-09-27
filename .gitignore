@@ -32,3 +32,4 @@ Tags
 r*hs # vtune output
 .deps # makefile temps
 
+status.current_container_id

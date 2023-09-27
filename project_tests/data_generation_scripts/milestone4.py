@@ -77,9 +77,9 @@ def generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianPara
     outputDimTable2 = pd.DataFrame(np.random.randint(0, dataSizeDim2/5, size=(dataSizeDim2, 2)), columns =['col1', 'col2'])
     outputDimTable2['col1'] = np.arange(1,dataSizeDim2+1, 1)
     
-    outputFactTable.to_csv(outputFile1, sep=',', index=False, header=header_line_fact, line_terminator='\n')
-    outputDimTable1.to_csv(outputFile2, sep=',', index=False, header=header_line_dim1, line_terminator='\n')
-    outputDimTable2.to_csv(outputFile3, sep=',', index=False, header=header_line_dim2, line_terminator='\n')
+    outputFactTable.to_csv(outputFile1, sep=',', index=False, header=header_line_fact, lineterminator='\n')
+    outputDimTable1.to_csv(outputFile2, sep=',', index=False, header=header_line_dim1, lineterminator='\n')
+    outputDimTable2.to_csv(outputFile3, sep=',', index=False, header=header_line_dim2, lineterminator='\n')
     return outputFactTable, outputDimTable1, outputDimTable2
 
 def createTest31():

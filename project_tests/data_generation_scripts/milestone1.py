@@ -39,7 +39,7 @@ def generateDataFileMidwayCheckin():
 	np.random.shuffle(column2)
 	#outputTable = np.column_stack((column1, column2)).astype(int)
 	outputTable = pd.DataFrame(list(zip(column1, column2)), columns =['col1', 'col2'])
-	outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, line_terminator='\n')
+	outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, lineterminator='\n')
 	return outputTable
 
 def createTestOne():
@@ -115,7 +115,7 @@ def generateDataFile2(dataSizeTableTwo):
 	# This is going to have many, many duplicates!!!!
 	outputTable['col3'] = np.random.randint(0,100, size = (dataSizeTableTwo))
 	outputTable['col4'] = np.random.randint(2**31 - 10000, 2**31, size = (dataSizeTableTwo))
-	outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, line_terminator='\n')
+	outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, lineterminator='\n')
 	return outputTable
 
 def createTestFour(dataTable):
@@ -143,7 +143,7 @@ def createTestFour(dataTable):
 	output_file.write('shutdown\n')
 
 	# columns need to align for append to work
-	deltaTable = pd.DataFrame([[-1, -11, -111, -1111],
+	deltaTable:pd.DataFrame = pd.DataFrame([[-1, -11, -111, -1111],
 		[-2, -22, -222, -2222],
 		[-3, -33, -333, -2222],
 		[-4, -44, -444, -2222],
@@ -154,7 +154,8 @@ def createTestFour(dataTable):
 		[-9, -99, -999, -2222],
 		[-10, -11, 0, -34]], columns=['col1', 'col2', 'col3', 'col4'])
 	
-	dataTable = dataTable.append(deltaTable)
+	# dataTable = dataTable.append(deltaTable)
+	dataTable = pd.concat([dataTable, deltaTable], sort=False)
 	data_gen_utils.closeFileHandles(output_file, exp_output_file)
 	return dataTable
 

@@ -5,7 +5,7 @@
 
 # declare parent image
 # start from ubuntu 18.04 base docker image (specified by Docker hub itself)
-FROM ubuntu:18.04
+FROM ubuntu:20.04
 
 # specify working directory inside the new docker container, creating it, if does not exist
 WORKDIR /cs165
@@ -23,19 +23,26 @@ WORKDIR /cs165
 #   strace for stack profiling & debugging
 #   mutt for email formatting, this is required on our staff automated tests
 #       emailing you summaries when your trial runs are done
+
+RUN bash -c 'apt-get update && apt-get install -y software-properties-common && add-apt-repository ppa:deadsnakes/ppa'
+
 RUN bash -c 'apt-get update && apt-get install -y \
     apt-utils \
     build-essential \
     gcc \
-    sse4.2-support \
+    curl \
+#    sse4.2-support \
     psmisc \
-    python \
-    python-pip \
+    python3.9 \
+    python3.9-distutils \
     tmux \
     valgrind \
     strace \
+    vim \
     mutt'
-    
+
+RUN bash -c 'curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3.9 get-pip.py'
+
 #   python stat packages: scipy, pandas. dependencies for test generation
 RUN bash -c 'pip install scipy pandas'
 
@@ -46,7 +53,8 @@ RUN bash -c 'apt-get install -y linux-tools-common linux-tools-generic && \
     cd /usr/lib/linux-tools && \
     cd `ls -1 | head -n1` && \
     rm -f /usr/bin/perf && \
-    ln -s `pwd`/perf /usr/bin/perf'
+    ln -s `pwd`/perf /usr/bin/perf && \
+    ln -s /usr/bin/python3.9 /usr/bin/python'
 
 
 ###################### Begin Customization ########################
