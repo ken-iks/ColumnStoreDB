@@ -87,8 +87,9 @@ stopcontainer:
 
 prep:
 	[ -d student_outputs ] || mkdir student_outputs
-
-
+	[ -d generated_data ] || mkdir generated_data
+	
+	
 clean:
 	rm -r student_outputs
 
