@@ -17,6 +17,14 @@
 #include "utils.h"
 #include "client_context.h"
 
+
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 /**
  * Takes a pointer to a string.
  * This method returns the original string truncated to where its first comma lies.
@@ -68,6 +76,19 @@ DbOperator* parse_create_tbl(char* create_arguments) {
     if (column_cnt < 1) {
         return NULL;
     }
+
+    char* path = makePath(table_name, _TABLE);
+
+    // Make the directory
+    if (mkdir(path, 0755) == -1){
+        return NULL;
+    }
+    // Update the catalog
+    TableObj tb;
+    strcpy(tb.name, table_name);
+    strcpy(tb.path, path);
+    // TODO: Finish
+
     // make create dbo for table
     DbOperator* dbo = malloc(sizeof(DbOperator));
     dbo->type = CREATE;
@@ -102,16 +123,111 @@ DbOperator* parse_create_db(char* create_arguments) {
         // replace final ')' with null-termination character.
         db_name[last_char] = '\0';
 
-        token = strsep(&create_arguments, ",");
-        if (token != NULL) {
+        char* path = makePath(db_name, _DB);
+
+        // Make the directory
+        if (mkdir(path, 0755) == -1){
             return NULL;
         }
+        // Update the catalog
+        DbObj db;
+        strcpy(db.name, db_name);
+        strcpy(db.path, path);
+
+        FILE* file = fopen("catalogue.dat", "a+b");
+        if (!file) {
+            perror("Error opening file");
+            return 1;
+            }
+
+        int fd = fileno(file);  // Get the file descriptor from FILE*
+
+        // Find the current size of the file
+        struct stat st;
+        if (fstat(fd, &st) == -1) {
+            perror("Error getting file size");
+            fclose(file);
+            return 1;
+        }
+
+        off_t currentSize = st.st_size;
+
+        // TODO: Use current size to update index catalogue (maybe hashtable mapping dashboard to location)
+        // TODO: In 'add table', we can have another index catalogue for where to find a given table name, then the same for columns
+        // TODO: Once done, test that these things can be created (at least tables and databases) -> FIGURE OUT HOW TO DOCKER
+
+        // Increase the size of the file to accommodate a new DbObj.
+        if (ftruncate(fd, currentSize + sizeof(DbObj)) == -1) {
+            perror("Error setting file size");
+            fclose(file);
+            return 1;
+        }
+
+        // Map the portion of the file where the new DbObj will go (i.e., the end).
+        DbObj* addr = (DbObj*)mmap(NULL, sizeof(DbObj), PROT_READ | PROT_WRITE, MAP_SHARED, fd, currentSize);
+        if (addr == MAP_FAILED) {
+            perror("Error mapping file");
+            fclose(file);
+            return 1;
+        }
+        // May possibly be copying db into address? (perhaps)
+        memcpy(addr, &db, sizeof(DbObj));
+
+        // Cleanup
+        if (munmap(addr, sizeof(DbObj)) == -1) {
+            perror("Error unmapping file");
+        }
+        fclose(file);
+
         // make create operator. 
         DbOperator* dbo = malloc(sizeof(DbOperator));
         dbo->type = CREATE;
         dbo->operator_fields.create_operator.create_type = _DB;
         strcpy(dbo->operator_fields.create_operator.name, db_name);
         return dbo;
+    }
+}
+
+
+
+/* Function for making directory */
+char* makePath(char* name, CreateType t) {
+    // dbname = name. tablename = dbname.name (split by '.') columnname = dbname.tbname.name
+
+    switch (t) {
+
+        case _DB: 
+            char* path[100] = "./";
+            strcat(name, path);
+            return path;
+            break;
+
+        case _TABLE:
+            char* path[100] = "./";
+            char *token = strtok(name, ".");
+            strcat(token, path);
+            strcat("/", path);
+            char *token = strtok(NULL, ".");
+            strcat(token, path);
+            return path;
+            break;
+
+        case _COLUMN:
+            char* path[100] = "./";
+            char *token = strtok(name, ".");
+            strcat(token, path);
+            strcat("/", path);
+            char *token = strtok(NULL, ".");
+            strcat(token, path);
+            strcat("/", path);
+            char *token = strtok(NULL, ".");
+            strcat(token, path);
+            return path;
+            break;
+
+        default:
+            return -1;
+            break;    
     }
 }
 
