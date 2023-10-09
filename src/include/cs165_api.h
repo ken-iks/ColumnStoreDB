@@ -98,24 +98,6 @@ typedef struct Db {
     size_t tables_capacity;
 } Db;
 
-typedef struct ColumnObj {
-    char name[20];
-    char path[50];
-} ColumnObj;
-
-typedef struct TableObj {
-    char name[20];
-    size_t size;
-    char path[50];
-    ColumnObj columns[100];
-} TableObj;
-
-typedef struct DbObj {
-    char name[20];
-    char path[50];
-    TableObj tables[100];
-    // Creation time/date?
-} DbObj;
 
 typedef struct IndexEntry {
     char* path;
@@ -279,6 +261,20 @@ typedef struct DbOperator {
 } DbOperator;
 
 extern Db *current_db;
+
+// CODE FOR HASHTABLE IMPLEMENTATION OF CATALOG
+
+typedef struct CatalogEntry {
+    char name[MAX_SIZE_NAME];
+    char filepath[MAX_SIZE_NAME];
+    CreateType t;
+    int line; // which line this entry is on the catalog
+    struct CatalogEntry *next;  // In case of collisions, we use chaining
+} CatalogEntry;
+
+typedef struct CatalogHashtable {
+    CatalogEntry* table[101]; // An array of pointers to entries
+} CatalogHashtable;
 
 
 /* 

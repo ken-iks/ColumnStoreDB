@@ -42,6 +42,14 @@ def generateDataFileMidwayCheckin():
 	outputTable.to_csv(outputFile, sep=',', index=False, header=header_line, lineterminator='\n')
 	return outputTable
 
+def createTestZero():
+	# write out test
+	output_file, exp_output_file = data_gen_utils.openFileHandles(1, TEST_DIR=TEST_BASE_DIR)
+	output_file.write('-- Load+create Data and shut down of tbl1 which has 1 attribute only\n')
+	output_file.write('create(db,\"db1\")\n')
+	# generate expected results
+	data_gen_utils.closeFileHandles(output_file, exp_output_file)
+
 def createTestOne():
 	# write out test
 	output_file, exp_output_file = data_gen_utils.openFileHandles(1, TEST_DIR=TEST_BASE_DIR)
@@ -380,6 +388,7 @@ def createTestNine(dataTable, dataSizeTableTwo, approxSelectivity):
 	data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
 def generateTestsMidwayCheckin(dataTable):
+	createTestZero()
 	createTestOne()
 	createTestTwo(dataTable)
 	createTestThree(dataTable)
