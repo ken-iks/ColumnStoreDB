@@ -88,6 +88,8 @@ void handle_client(int client_socket) {
 
     // create the client context here
     ClientContext* client_context = NULL;
+    CatalogHashtable* variable_pool = NULL;
+    allocate(&variable_pool, 10);
 
     // Continually receive messages from client and execute queries.
     // 1. Parse the command
@@ -111,7 +113,7 @@ void handle_client(int client_socket) {
 
             // 1. Parse command
             //    Query string is converted into a request for an database operator
-            DbOperator* query = parse_command(recv_message.payload, &send_message, client_socket, client_context);
+            DbOperator* query = parse_command(recv_message.payload, &send_message, client_socket, client_context, variable_pool);
 
             // 2. Handle request
             //    Corresponding database operator is executed over the query

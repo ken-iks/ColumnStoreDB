@@ -262,14 +262,16 @@ typedef struct DbOperator {
 
 extern Db *current_db;
 
-// CODE FOR HASHTABLE IMPLEMENTATION OF CATALOG
+// CODE FOR HASHTABLE IMPLEMENTATION OF CATALOG -> also used for variable pool
 
 typedef struct CatalogEntry {
     char name[MAX_SIZE_NAME];
     char filepath[MAX_SIZE_NAME];
     CreateType t;
+    int size; // size of bit vector (and TODO: size of table)
     int line; // which line this entry is on the catalog
     struct CatalogEntry *next;  // In case of collisions, we use chaining
+    bool bitvector[1024]; // For variable pool
 } CatalogEntry;
 
 typedef struct CatalogHashtable {

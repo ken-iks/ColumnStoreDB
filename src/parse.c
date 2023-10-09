@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <dirent.h>
+#include <limits.h>
 #define MAX_LINE_SIZE 1024
 #define DELIMITER ","
 
@@ -84,6 +85,7 @@ CatalogEntry* get(CatalogHashtable* ht, char* name) {
         CatalogEntry* target_node_ptr = ht->table[key];
         while (target_node_ptr != NULL && !found) {
             CatalogEntry target = *target_node_ptr;
+            //perror(target.name);
             if (strcmp(target.name, name) == 0) {
                 found = true;
             }
@@ -93,6 +95,7 @@ CatalogEntry* get(CatalogHashtable* ht, char* name) {
         }
         return (found) ? target_node_ptr : (CatalogEntry*) NULL;
     }
+    perror("Hashtable doesnt exist");
     return (CatalogEntry*) NULL;
 }
 
@@ -119,6 +122,7 @@ int put(CatalogHashtable* ht, CatalogEntry value) {
 
     if (ht != NULL) {
         int buck = hash(value.name);
+        
         CatalogHashtable temp = *ht;
         if (temp.table[buck] == NULL) {
             ht->table[buck] = new_node;
@@ -210,17 +214,35 @@ CreateType str_to_type(char * t) {
 // THIS TAKES A LINE IN THE FILE AND CONVERTS IT TO A CATALOG ENTRY, TO BE APPROPRIATLEY PLACED IN THE HASHTABLE
 CatalogEntry* line_to_entry(char* line, int line_num){
     CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
-    char* name = strtok(line, ",");
-    char* path = strtok(NULL, ",");
-    char* typestring = strtok(NULL, ",");
+    if (!cat) {
+        perror("Failed to allocate memory for CatalogEntry");
+        return NULL;
+    }
+
+    char* tmp = line; // Use a tmp pointer to keep track of current position in the string.
+    
+    char* name = strsep(&tmp, ",");
+    char* path = strsep(&tmp, ",");
+    char* typestring = strsep(&tmp, ",");
+
+    
+    if (!name || !path || !typestring) {
+        free(cat);
+        fprintf(stderr, "Error: Malformed line: %s in line_to_entry function\n", line);
+        return NULL;
+    }
+    //fprintf(stderr, "Valid line: %s in line_to_entry function\n", line);
+
     CreateType type = str_to_type(typestring);
-    strcpy((*cat).filepath,path);
-    strcpy((*cat).name,name);
-    (*cat).t = type;
-    (*cat).next = NULL;
-    (*cat).line = line_num;
+
+    strcpy(cat->filepath, path);
+    strcpy(cat->name, name);
+    cat->t = type;
+    cat->next = (CatalogEntry*)NULL;
+    cat->line = line_num;
     return cat;
 }
+
 
 /**
  * This method transforms the .txt catalog into a CatalogHashtable, which represents an array of CatalogEntry's
@@ -248,25 +270,42 @@ CatalogHashtable* populate_catalog(FILE* file) {
         return NULL;
     }
 
-    char* data = mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (data == MAP_FAILED) {
-        perror("mmap");
+    char* data = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    char *buffer = malloc(sb.st_size);  // +1 for null-terminator
+    if (!buffer) {
+        perror("malloc");
         close(fd);
         return NULL;
     }
+    memcpy(buffer, data, sb.st_size);
+    //buffer[sb.st_size] = '\0';  // Null-terminate the buffer
 
-    char* line = strtok(data, "\n");
+    char* line = NULL;
+    char* tmp = buffer;  
     int count = 1;
-    while (line) {
-        char* line_copy = line;
+
+ 
+    while ((line = strsep(&tmp, "\n")) != NULL) {
+        if (strlen(line) == 0) {
+            continue;
+        }
         // Create entry for the line
-        CatalogEntry* ct = line_to_entry(line_copy, count);
+        CatalogEntry* ct = line_to_entry(line, count);
+
+        if (!ct->name)  {
+            perror("Couldnt add line");
+            munmap(data, sb.st_size);
+            close(fd);
+            return ht;
+        }
         // Add entry to hashtable
         put(ht, *ct);
-        // Go to next line and increase count
-        line = strtok(NULL, "\n");
+        
+        // Increase count
         count++;
     }
+    munmap(data, sb.st_size);
+    close(fd);
     return ht;
 }
 
@@ -475,56 +514,77 @@ DbOperator* parse_create_db(char* create_arguments) {
         return dbo;
     }
 }
+// Function to get name from a '.' seperated string (name will be final value)
+char* getName(char* input) {
+    if (!input) {
+        return NULL;
+    }
+
+    // Find the last occurrence of '.'
+    const char* last_dot = strrchr(input, '.');
+    if (last_dot) {
+        return (char*)(last_dot + 1);  // Return the value after the '.'
+    } else {
+        return input;  // If no '.' is found, return the whole string
+    }
+}
 
 
 
 /* Function for making directory */
 char* makePath(char* name, CreateType t) {
     // dbname = name. tablename = dbname.name (split by '.') columnname = dbname.tbname.name
-    char *path = malloc(100);
-
+    char *path = malloc(256);  // allocate more memory, or dynamically calculate size
     if (!path) {
         return NULL;
     }
 
+    char *nameCopy = strdup(name);  // work on a copy of the name to avoid modifying original
+    char *temp = nameCopy;
+    char *token;
+
+    strcpy(path, "./");
+
     switch (t) {
-
-        case _DB: {
-            strcpy(path, "./");
-            strcat(path, name);
-            return path;
+        case _DB:
+            strcat(path, nameCopy);
             break;
-        }
-
-        case _TABLE: {
-            strcpy(path, "./");
-            char *token = strtok(name, ".");
+            
+        case _TABLE:
+            token = strsep(&temp, ".");
+            if (!token) { free(nameCopy); return NULL; }
             strcat(path, token);
             strcat(path, "/");
-            token = strtok(NULL, ".");
+            
+            token = strsep(&temp, ".");
+            if (!token) { free(nameCopy); return NULL; }
             strcat(path, token);
-            return path;
             break;
-        }
-
-        case _COLUMN: {
-            strcpy(path, "./");
-            char *token = strtok(name, ".");
+            
+        case _COLUMN:
+            token = strsep(&temp, ".");
+            if (!token) { free(nameCopy); return NULL; }
             strcat(path, token);
             strcat(path, "/");
-            token = strtok(NULL, ".");
+            
+            token = strsep(&temp, ".");
+            if (!token) { free(nameCopy); return NULL; }
             strcat(path, token);
             strcat(path, "/");
-            token = strtok(NULL, ".");
+            
+            token = strsep(&temp, ".");
+            if (!token) { free(nameCopy); return NULL; }
             strcat(path, token);
-            return path;
             break;
-        }
 
         default:
+            free(nameCopy);
+            free(path);
             return NULL;
-            break;    
     }
+    
+    free(nameCopy);
+    return path;
 }
 
 /**
@@ -563,7 +623,7 @@ DbOperator* parse_create(char* create_arguments) {
     free(to_free);
     return dbo;
 }
-
+// For 'insert'
 int add_element_to_file(char* fname, char* abspath, char* val) {
     char *fullpath = malloc(100);
     strcpy(fullpath, abspath);
@@ -575,9 +635,40 @@ int add_element_to_file(char* fname, char* abspath, char* val) {
         perror("Error opening file");
         return -1;
         }
-    fprintf(file, "%s", val);
+    fprintf(file, "%s\n", val);
     fclose(file);
     free(fullpath);
+    return 0;
+}
+// Adds an element with filename = db.tbl.cl to correct file granted that cl exists in catalog
+// Primarily used in 'load'
+int add_element_to_file2(char* filename, char* val) {
+
+    char* name = getName(filename);
+    
+
+    FILE* file1 = fopen("catalogue.txt", "r");
+    
+    CatalogHashtable* ht = populate_catalog(file1);
+    
+    CatalogEntry* this_table = get(ht, name);
+
+    if (!this_table) {
+        //perror("Error retriving column");
+        fprintf(stderr, "Error retriving column: %s", name);
+        return -1;
+    }
+    char* fullpath = (*this_table).filepath;
+    strcat(fullpath, ".txt");
+
+    FILE* file = fopen(fullpath, "a");
+    if (!file) {
+        perror("Error opening file");
+        return -1;
+        }
+    fprintf(file, "%s\n", val);
+    fclose(file);
+
     return 0;
 }
 
@@ -619,7 +710,7 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
         }
 
         while ((entry = readdir(dir)) != NULL) {
-            // Check if the entry is a regular file
+            // Check if the entry is a regular file -> need to account for final ')' at some point
             if (entry->d_type == DT_REG) {
                 token = strsep(command_index, ",");
                 add_element_to_file(entry->d_name, path, token);
@@ -660,23 +751,305 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
     }
 }
 
-DbOperator* parse_insert(char* query_command, message* send_message) {
+
+
+DbOperator* parse_load(char* query_command, message* send_message) {
         if (strncmp(query_command, "(", 1) == 0) {
         query_command++;
         char** command_index = &query_command;
+        
+        
         // parse table input
         char* file_name = next_token(command_index, &send_message->status);
+        file_name = trim_quotes(file_name);
+        int last_char = strlen(file_name) - 1;
+        if (last_char < 0 || file_name[last_char] != ')') {
+            return NULL;
+        }
+        file_name[last_char] = '\0';
+
         if (send_message->status == INCORRECT_FORMAT) {
             return NULL;
         }
-        //TODO: load csv file and then follow steps from chatgpt to add values to db
 
+        //TODO: CHECK IF THE THING WE WANT TO LOAD ACTUALLY EXISTS
 
+        FILE* csv = fopen(file_name, "r");
+        char line[1024];
+        char *headerTokens[100];
+        int index = 0;
+
+        if (fgets(line, sizeof(line), csv)) {
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') {
+                line[len - 1] = '\0';
+            }
+
+            char *token, *stringp, *tofree;
+            tofree = stringp = strdup(line);
+            while ((token = strsep(&stringp, ",")) != NULL) {
+                headerTokens[index] = strdup(token);
+                index++;
+            }
+            free(tofree);
+        }
+
+        while (fgets(line, sizeof(line), csv)) {
+            char *lineTokens[100];
+            int lineIndex = 0;
+
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') {
+                line[len - 1] = '\0';
+            }
+
+            char *token, *stringp, *tofree;
+            tofree = stringp = strdup(line);
+            while ((token = strsep(&stringp, ",")) != NULL) {
+                lineTokens[lineIndex] = token;
+                lineIndex++;
+            }
+
+            for (int i = 0; i < lineIndex; i++) {
+                if (headerTokens[i] != NULL && lineTokens[i] != NULL) {
+                    add_element_to_file2(headerTokens[i], lineTokens[i]);
+                }
+                else {
+                    break;
+                }
+            }
+
+            free(tofree);
+        }
+        fclose(csv);
+
+        // Clean up the allocated memory for header tokens
+        for (int i = 0; i < index; i++) {
+            free(headerTokens[i]);
+        }
+        DbOperator* dbo = malloc(sizeof(DbOperator));
+        return dbo;
 
         } else {
         send_message->status = UNKNOWN_COMMAND;
         return NULL;
     }
+}
+
+// helper functions for parse select
+bool contains_dot(const char *str) {
+    return strchr(str, '.') != NULL;
+}
+
+
+DbOperator* parse_select(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    if (contains_dot(arg1)) {
+        // Dealing with column
+        char* name = getName(arg1);
+        
+        // retrieve filename from catalog
+        FILE* file1 = fopen("catalogue.txt", "r");
+        CatalogHashtable* ht = populate_catalog(file1);
+        CatalogEntry* this_table = get(ht, name);
+
+        if (!this_table) {
+            //perror("Error retriving column");
+            fprintf(stderr, "Error retriving column: %s", name);
+            return NULL;
+        }
+        char* fullpath = (*this_table).filepath;
+        strcat(fullpath, ".txt");
+        // open column file
+        FILE* file = fopen(fullpath, "r");
+        if (!file) {
+            perror("Error opening file");
+            return NULL;
+            }
+
+        char* low = next_token(command_index, &send_message->status);
+        char* high = next_token(command_index, &send_message->status);
+        high = trim_parenthesis(high);
+        int ilow;
+        int ihigh;
+        if (!low) {
+            ilow = INT_MIN;
+        } else {
+            ilow = atoi(low);
+        }
+        if (!high) {
+            ihigh = INT_MAX;
+        } else {
+            ihigh = atoi(high);
+        }
+
+        char line[1024];
+        // Skip the first line
+        if (!fgets(line, sizeof(line), file)) {
+            perror("Error reading file");
+            fclose(file);
+            return NULL;
+        }
+
+
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+        strcpy(cat->name, handle);
+        
+
+
+        int count = 0;
+        // Now loop through each subsequent line
+        while (fgets(line, sizeof(line), file)) {
+            // Remove the newline character, if present
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') {
+                line[len - 1] = '\0';
+            }
+            int lineval = atoi(line);
+            // Now 'line' contains the current line from the file without the newline character
+            cat->bitvector[count] = lineval < ihigh && lineval > ilow;
+            count++;
+
+        }
+        cat->size = count;
+        
+        fclose(file);
+        put(variable_pool, *cat);
+    }
+    else {
+        // Dealing with pos vector
+        CatalogEntry* pvector = get(variable_pool, arg1);
+        char* vvector_name = next_token(command_index, &send_message->status);
+        CatalogEntry* vvector = get(variable_pool, vvector_name);
+        int size = pvector->size;
+
+        char* low = next_token(command_index, &send_message->status);
+        char* high = next_token(command_index, &send_message->status);
+        high = trim_parenthesis(high);
+        int ilow;
+        int ihigh;
+        if (!low) {
+            ilow = INT_MIN;
+        } else {
+            ilow = atoi(low);
+        }
+        if (!high) {
+            ihigh = INT_MAX;
+        } else {
+            ihigh = atoi(high);
+        }
+
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+        strcpy(cat->name, handle);
+        cat->size = size;
+
+        // assume that both vectors are the same size (one is treated as a bit vector and one as val vector)
+        for (int i=0; i<size; i++) {
+            cat->bitvector[i] = pvector->bitvector[i] && (vvector->bitvector[i] > ilow && vvector->bitvector[i] < ihigh);
+        }
+        
+        put(variable_pool, *cat);
+    }
+
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+DbOperator* parse_fetch(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse table input
+    char* colname = next_token(command_index, &send_message->status);
+    char* bitvname = next_token(command_index, &send_message->status);
+    bitvname = trim_parenthesis(bitvname);
+
+    char* name = getName(colname);
+    
+    // retrieve filename from catalog
+    FILE* file1 = fopen("catalogue.txt", "r");
+    CatalogHashtable* ht = populate_catalog(file1);
+    CatalogEntry* this_table = get(ht, name);
+
+    if (!this_table) {
+        //perror("Error retriving column");
+        fprintf(stderr, "Error retriving column: %s", name);
+        return NULL;
+    }
+    char* fullpath = (*this_table).filepath;
+    strcat(fullpath, ".txt");
+    // open column file
+    FILE* file = fopen(fullpath, "r");
+    if (!file) {
+        perror("Error opening file");
+        return NULL;
+        }
+    // retrieve bitvector
+    CatalogEntry* pvector = get(variable_pool, bitvname);
+ 
+
+    char line[1024];
+    // Skip the first line
+    if (!fgets(line, sizeof(line), file)) {
+        perror("Error reading file");
+        fclose(file);
+        return NULL;
+    }
+
+    CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+    if (!cat) {
+        perror("Failed to allocate memory for CatalogEntry");
+        return NULL;
+    }
+    strcpy(cat->name, handle);
+
+    int count = 0;
+    // Now loop through each subsequent line
+    while (fgets(line, sizeof(line), file)) {
+        // Remove the newline character, if present
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';
+        }
+        int lineval = atoi(line);
+        // Now 'line' contains the current line from the file without the newline character
+        if (pvector->bitvector[count]) {
+            cat->bitvector[count] = lineval;
+        }
+        else {
+            cat->bitvector[count] = NULL;
+        }
+        count++;
+    }
+    cat->size = count;
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+//TODO!
+DbOperator* parse_print(char* query_command, message* send_message, CatalogHashtable* variable_pool) {
 }
 
 /**
@@ -690,7 +1063,7 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
  *      How would you add a new command type to parse? 
  *      What if such command requires multiple arguments?
  **/
-DbOperator* parse_command(char* query_command, message* send_message, int client_socket, ClientContext* context) {
+DbOperator* parse_command(char* query_command, message* send_message, int client_socket, ClientContext* context, CatalogHashtable* variable_pool) {
     // a second option is to malloc the dbo here (instead of inside the parse commands). Either way, you should track the dbo
     // and free it when the variable is no longer needed. 
     DbOperator *dbo = NULL; // = malloc(sizeof(DbOperator));
@@ -732,9 +1105,18 @@ DbOperator* parse_command(char* query_command, message* send_message, int client
     } else if (strncmp(query_command, "relational_insert", 17) == 0) {
         query_command += 17;
         dbo = parse_insert(query_command, send_message);
-    } else if (strncmp(query_command, 'load', 4) == 0) {
+    } else if (strncmp(query_command, "load", 4) == 0) {
         query_command += 4;
         dbo = parse_load(query_command, send_message);
+    } else if (handle != NULL && (strncmp(query_command, "select", 6) == 0)) {
+        query_command += 6;
+        dbo = parse_select(query_command, handle, send_message, variable_pool);
+    } else if (handle != NULL && (strncmp(query_command, "fetch", 5) == 0)) {
+        query_command += 5;
+        dbo = parse_fetch(query_command, handle, send_message, variable_pool);
+    } else if (strncmp(query_command, "print", 5) == 0) {
+        query_command += 5;
+        dbo = parse_print(query_command, send_message, variable_pool);
     }
     if (dbo == NULL) {
         return dbo;
