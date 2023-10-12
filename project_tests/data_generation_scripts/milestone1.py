@@ -288,10 +288,10 @@ def createTestEight(dataTable, dataSizeTableTwo, approxSelectivity):
 	exp_output_file.write('\n')
 	exp_output_file.write(str(output1) + '\n')
 	exp_output_file.write(str(output2) + '\n')
-	exp_output_file.write(str(output3) + '\n')
-	exp_output_file.write(str(output4) + '\n')
 	exp_output_file.write(str(int(dataTable['col1'].max())))
 	exp_output_file.write('\n')
+	exp_output_file.write(str(output3) + '\n')
+	exp_output_file.write(str(output4) + '\n')
 	data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
 def createTestNine(dataTable, dataSizeTableTwo, approxSelectivity):
