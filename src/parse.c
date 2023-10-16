@@ -836,7 +836,7 @@ DbOperator* parse_load(char* query_command, message* send_message) {
     }
 }
 
-// helper functions for parse select
+// helper functions for parse select - to decide if something is a column or a vector
 bool contains_dot(const char *str) {
     return strchr(str, '.') != NULL;
 }
@@ -920,7 +920,15 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
             }
             int lineval = atoi(line);
             // Now 'line' contains the current line from the file without the newline character
-            cat->bitvector[count] = lineval < ihigh && lineval > ilow;
+            // For our bitvector, false === INT_MIN and true === INT_MAX (this allows us to use the bitvector object for a value vector)
+            int val;
+            if (lineval < ihigh && lineval > ilow) {
+                val = INT_MAX;
+            }
+            else {
+                val = INT_MIN;
+            }
+            cat->bitvector[count] = val;
             count++;
 
         }
@@ -962,7 +970,14 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
 
         // assume that both vectors are the same size (one is treated as a bit vector and one as val vector)
         for (int i=0; i<size; i++) {
-            cat->bitvector[i] = pvector->bitvector[i] && (vvector->bitvector[i] > ilow && vvector->bitvector[i] < ihigh);
+            int val;
+            if (pvector->bitvector[i] != INT_MIN && (vvector->bitvector[i] > ilow && vvector->bitvector[i] < ihigh)) {
+                val = INT_MAX;
+            }
+            else {
+                val = INT_MIN;
+            }
+            cat->bitvector[i] = val;
         }
         
         put(variable_pool, *cat);
@@ -1035,11 +1050,11 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         }
         int lineval = atoi(line);
         // Now 'line' contains the current line from the file without the newline character
-        if (pvector->bitvector[count]) {
+        if (pvector->bitvector[count] != INT_MIN) {
             cat->bitvector[count] = lineval;
         }
         else {
-            cat->bitvector[count] = NULL;
+            cat->bitvector[count] = INT_MIN;
         }
         count++;
     }
@@ -1048,8 +1063,202 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
     return dbo;
 }
 
-//TODO!
+int print_column(char* token) {
+    char* name = getName(token);
+    // retrieve filename from catalog
+    FILE* file1 = fopen("catalogue.txt", "r");
+    CatalogHashtable* ht = populate_catalog(file1);
+    CatalogEntry* this_table = get(ht, name);
+
+    if (!this_table) {
+        //perror("Error retriving column");
+        fprintf(stderr, "Error retriving column: %s", name);
+        return 0;
+    }
+    char* fullpath = (*this_table).filepath;
+    strcat(fullpath, ".txt");
+    // open column file
+    FILE* file = fopen(fullpath, "r");
+    if (!file) {
+        perror("Error opening file");
+        return 0;
+        }
+
+    FILE *combinedFile = fopen("combined_data.txt", "a");
+
+    char line[1024];
+    //skip first line
+    if (!fgets(line, sizeof(line), file)) {
+        perror("Error reading file");
+        fclose(file);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), file)) {
+        fputs(line, combinedFile);
+        fputc(',', combinedFile);
+    }
+    fclose(file1);
+    fclose(file);
+    fclose(combinedFile);
+    return 1;
+}   
+
+int print_vector(char* token, CatalogHashtable* variable_pool) {
+    CatalogEntry* vvector = get(variable_pool, token);
+    FILE *combinedFile = fopen("combined_data.txt", "a");
+    if (!combinedFile) {
+        perror("Error opening combined file");
+        return 0;
+    }
+    int size = vvector->size;
+    for (int i=0; i<size; i++){
+        char buffer[50];
+        snprintf(buffer, sizeof(buffer), "%d", vvector->bitvector[i]);
+        fputs(buffer, combinedFile);
+        fputc(',', combinedFile);
+    }
+    fclose(combinedFile);
+    return 1;
+}
+
+/*
+parse_print will print out one or more vectors in tabular format (X,Y,Z...)
+takes in a column name or a vector name 
+*/
 DbOperator* parse_print(char* query_command, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    char* token = next_token(command_index, &send_message->status);
+    int last_char = strlen(token) - 1;
+    while (last_char < 0 || token[last_char] != ')') {
+        if (contains_dot(token)) {
+            print_column(token);
+        }
+        else {
+            print_vector(token, variable_pool);
+        }
+        token = next_token(command_index, &send_message->status);
+        last_char = strlen(token) - 1;
+    }
+    token = trim_parenthesis(token);
+    if (contains_dot(token)) {
+        print_column(token);
+    }
+    else {
+        print_vector(token, variable_pool);
+    }
+
+    // Open the combined file for reading
+    FILE *readCombined = fopen("combined_data.txt", "r");
+    if (!readCombined) {
+        perror("Error opening combined file");
+        return NULL;
+    }
+
+    // Read and process each line of the combined file
+    char line[1024];
+    while (fgets(line, sizeof(line), readCombined)) {
+        // Process each line as needed, e.g., print, parse further, etc.
+        fprintf(stdout, "%s", line);
+    }
+
+    // Close the file when done
+    fclose(readCombined);
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+//TODO:
+DbOperator* parse_math(char* arguments, message* response, char* handle, MathType type) {
+    if (response == NULL)
+        return NULL;
+    if (arguments == NULL || *arguments != '(') {
+        response->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    arguments++;
+
+    // create a copy of string
+    size_t space = strlen(arguments) + 1;
+    char* copy = malloc(space * sizeof(char));
+    strcpy(copy, arguments);
+    size_t len = strlen(copy);
+    if (copy[len - 1] != ')') {
+        response->status = INCORRECT_FORMAT;
+        return NULL;
+    }
+    copy[len - 1] = '\0';
+    
+    // possible to have two arguments to the operator
+    char* first;
+
+    // parse arguments, look for two if necessary
+    if (type > MIN) {
+        first = (char*) strsep(&copy, ",");
+        if (first == NULL) {
+            response->status = INCORRECT_FORMAT;
+            return NULL;
+        }
+    } else {
+        first = copy;
+    }
+    char** params = malloc(sizeof(char*) * 6);
+    bool is_var = false;
+    int num_tokens = 0;
+    if (first == NULL) {
+        response->status = INCORRECT_FORMAT;
+        return NULL;
+    }
+    // parse the first argument
+    params[num_tokens] = (char*) strsep(&first, ".");
+    if (first == NULL) {
+        num_tokens += 1;
+        is_var = true;
+    } else {
+        params[num_tokens + 1] = (char*) strsep(&first, ".");
+        if (first == NULL) {
+            response->status = INCORRECT_FORMAT;
+            free(params);
+            return NULL;
+        } else {
+            params[num_tokens + 2] = first;
+        }
+        num_tokens += 3;
+    }
+    // parse the second argument
+    if (copy != NULL) {
+        params[num_tokens] = (char*) strsep(&copy, ".");
+        if (copy == NULL) {
+            num_tokens += 1;
+        } else {
+            params[num_tokens + 1] = (char*) strsep(&copy, ".");
+            if (copy == NULL) {
+                response->status = INCORRECT_FORMAT;
+                free(params);
+                return NULL;
+            } else {
+                params[num_tokens + 2] = copy;
+            }
+            num_tokens += 3;
+        }
+    }
+
+    // create select operator object
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    dbo->type = OP_MATH;
+    dbo->fields.math = (MathOperator) {
+        .type = type,
+        .handle = handle,
+        .params = params,
+        .num_params = num_tokens,
+        .is_var = is_var
+    };
+    return dbo;
 }
 
 /**
@@ -1118,6 +1327,32 @@ DbOperator* parse_command(char* query_command, message* send_message, int client
         query_command += 5;
         dbo = parse_print(query_command, send_message, variable_pool);
     }
+    if (strncmp(query_command, "avg", 3) == 0 ||
+        strncmp(query_command, "sum", 3) == 0 ||
+        strncmp(query_command, "max", 3) == 0 ||
+        strncmp(query_command, "min", 3) == 0 ||
+        strncmp(query_command, "add", 3) == 0 ||
+        strncmp(query_command, "sub", 3) == 0) {
+        MathType type;
+        if (strncmp(query_command, "avg", 3) == 0)
+            type = AVG;
+        else if (strncmp(query_command, "sum", 3) == 0)
+            type = SUM;
+        else if (strncmp(query_command, "max", 3) == 0)
+            type = MAX;
+        else if (strncmp(query_command, "min", 3) == 0)
+            type = MIN;
+        else if (strncmp(query_command, "add", 3) == 0)
+            type = ADD;
+        else if (strncmp(query_command, "sub", 3) == 0)
+            type = SUB;
+        else {
+            perror("Invalid MATH operator type encountered");
+            return NULL;
+        }
+        query_command += 3;
+        return parse_math(query_command, send_message, handle, type);
+        }
     if (dbo == NULL) {
         return dbo;
     }

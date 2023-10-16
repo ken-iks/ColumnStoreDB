@@ -271,13 +271,14 @@ typedef struct CatalogEntry {
     int size; // size of bit vector (and TODO: size of table)
     int line; // which line this entry is on the catalog
     struct CatalogEntry *next;  // In case of collisions, we use chaining
-    bool bitvector[1024]; // For variable pool
+    int bitvector[1024]; // For variable pool
 } CatalogEntry;
 
 typedef struct CatalogHashtable {
     CatalogEntry* table[101]; // An array of pointers to entries
 } CatalogHashtable;
 
+typedef enum MathType { AVG, SUM, MAX, MIN, ADD, SUB } MathType;
 
 /* 
  * Use this command to see if databases that were persisted start up properly. If files
