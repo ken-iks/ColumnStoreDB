@@ -1059,6 +1059,9 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         count++;
     }
     cat->size = count;
+
+    put(variable_pool, *cat);
+
     DbOperator* dbo = malloc(sizeof(DbOperator));
     return dbo;
 }
@@ -1174,90 +1177,115 @@ DbOperator* parse_print(char* query_command, message* send_message, CatalogHasht
 }
 
 //TODO:
-DbOperator* parse_math(char* arguments, message* response, char* handle, MathType type) {
-    if (response == NULL)
-        return NULL;
-    if (arguments == NULL || *arguments != '(') {
-        response->status = UNKNOWN_COMMAND;
+DbOperator* parse_avg(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
         return NULL;
     }
-    arguments++;
-
-    // create a copy of string
-    size_t space = strlen(arguments) + 1;
-    char* copy = malloc(space * sizeof(char));
-    strcpy(copy, arguments);
-    size_t len = strlen(copy);
-    if (copy[len - 1] != ')') {
-        response->status = INCORRECT_FORMAT;
-        return NULL;
-    }
-    copy[len - 1] = '\0';
+    query_command++;
+    char** command_index = &query_command;
     
-    // possible to have two arguments to the operator
-    char* first;
+    
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    // get value vector
+    CatalogEntry* pvector = get(variable_pool, arg1);
 
-    // parse arguments, look for two if necessary
-    if (type > MIN) {
-        first = (char*) strsep(&copy, ",");
-        if (first == NULL) {
-            response->status = INCORRECT_FORMAT;
-            return NULL;
-        }
-    } else {
-        first = copy;
+    int ret = 0;
+    int count = pvector->size;
+
+    for (int i=0; i< count; i++) {
+        ret += atoi(pvector->bitvector[i]);
     }
-    char** params = malloc(sizeof(char*) * 6);
-    bool is_var = false;
-    int num_tokens = 0;
-    if (first == NULL) {
-        response->status = INCORRECT_FORMAT;
+    // ret now has average
+    ret /= count;
+
+    CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+    if (!cat) {
+        perror("Failed to allocate memory for CatalogEntry");
         return NULL;
     }
-    // parse the first argument
-    params[num_tokens] = (char*) strsep(&first, ".");
-    if (first == NULL) {
-        num_tokens += 1;
-        is_var = true;
-    } else {
-        params[num_tokens + 1] = (char*) strsep(&first, ".");
-        if (first == NULL) {
-            response->status = INCORRECT_FORMAT;
-            free(params);
-            return NULL;
-        } else {
-            params[num_tokens + 2] = first;
-        }
-        num_tokens += 3;
-    }
-    // parse the second argument
-    if (copy != NULL) {
-        params[num_tokens] = (char*) strsep(&copy, ".");
-        if (copy == NULL) {
-            num_tokens += 1;
-        } else {
-            params[num_tokens + 1] = (char*) strsep(&copy, ".");
-            if (copy == NULL) {
-                response->status = INCORRECT_FORMAT;
-                free(params);
-                return NULL;
-            } else {
-                params[num_tokens + 2] = copy;
-            }
-            num_tokens += 3;
-        }
-    }
+    strcpy(cat->name, handle);
 
-    // create select operator object
+    strcpy(cat->value, ret);
+    put(variable_pool, *cat);
+
     DbOperator* dbo = malloc(sizeof(DbOperator));
-    dbo->type = OP_MATH;
-    dbo->fields.math = (MathOperator) {
-        .type = type,
-        .handle = handle,
-        .params = params,
-        .num_params = num_tokens,
-        .is_var = is_var
-    };
+    return dbo;
+}
+
+DbOperator* parse_sum(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    // get value vector
+    CatalogEntry* pvector = get(variable_pool, arg1);
+
+    int ret = 0;
+    int count = pvector->size;
+
+    for (int i=0; i< count; i++) {
+        ret += atoi(pvector->bitvector[i]);
+    }
+    // ret now has sum
+    CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+    if (!cat) {
+        perror("Failed to allocate memory for CatalogEntry");
+        return NULL;
+    }
+    strcpy(cat->name, handle);
+    strcpy(cat->value, ret);
+    put(variable_pool, *cat);
+
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+DbOperator* parse_max(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    // get value vector
+    CatalogEntry* pvector = get(variable_pool, arg1);
+
+    int ret = INT_MIN;
+    int count = pvector->size;
+    int pos[count];
+
+    for (int i=0; i< count; i++) {
+        int temp = atoi(pvector->bitvector[i]);
+        if (temp >= ret) {
+            ret = temp;
+        }
+    }
+    char** handle_index = &handle;
+    char* handle_copy = next_token(handle_index, &send_message->status);
+    char* handle_second = next_token(handle_index, &send_message->status);
+    // ret now has sum
+    CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+    if (!cat) {
+        perror("Failed to allocate memory for CatalogEntry");
+        return NULL;
+    }
+    strcpy(cat->name, handle);
+    strcpy(cat->size, ret);
+    put(variable_pool, *cat);
+
+    DbOperator* dbo = malloc(sizeof(DbOperator));
     return dbo;
 }
 
@@ -1326,34 +1354,25 @@ DbOperator* parse_command(char* query_command, message* send_message, int client
     } else if (strncmp(query_command, "print", 5) == 0) {
         query_command += 5;
         dbo = parse_print(query_command, send_message, variable_pool);
-    }
-    if (strncmp(query_command, "avg", 3) == 0 ||
-        strncmp(query_command, "sum", 3) == 0 ||
-        strncmp(query_command, "max", 3) == 0 ||
-        strncmp(query_command, "min", 3) == 0 ||
-        strncmp(query_command, "add", 3) == 0 ||
-        strncmp(query_command, "sub", 3) == 0) {
-        MathType type;
-        if (strncmp(query_command, "avg", 3) == 0)
-            type = AVG;
-        else if (strncmp(query_command, "sum", 3) == 0)
-            type = SUM;
-        else if (strncmp(query_command, "max", 3) == 0)
-            type = MAX;
-        else if (strncmp(query_command, "min", 3) == 0)
-            type = MIN;
-        else if (strncmp(query_command, "add", 3) == 0)
-            type = ADD;
-        else if (strncmp(query_command, "sub", 3) == 0)
-            type = SUB;
-        else {
-            perror("Invalid MATH operator type encountered");
-            return NULL;
-        }
+    } else if (strncmp(query_command, "avg", 3) == 0) {
         query_command += 3;
-        return parse_math(query_command, send_message, handle, type);
-        }
-    if (dbo == NULL) {
+        dbo = parse_avg(query_command, handle, send_message, variable_pool); 
+    } else if (strncmp(query_command, "sum", 3) == 0) {
+        query_command += 3;
+        dbo = parse_sum(query_command, handle, send_message, variable_pool); 
+    } else if (strncmp(query_command, "max", 3) == 0) {
+        query_command += 3;
+        parse_max(); //TODO
+    } else if (strncmp(query_command, "min", 3) == 0) {
+        query_command += 3;
+        parse_min(); //TODO
+    } else if (strncmp(query_command, "add", 3) == 0) {
+        query_command += 3;
+        parse_add(); //TODO
+    } else if (strncmp(query_command, "sub", 3) == 0) {
+        query_command += 3;
+        parse_sub(); //TODO
+    } if (dbo == NULL) {
         return dbo;
     }
     

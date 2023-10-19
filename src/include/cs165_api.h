@@ -272,6 +272,7 @@ typedef struct CatalogEntry {
     int line; // which line this entry is on the catalog
     struct CatalogEntry *next;  // In case of collisions, we use chaining
     int bitvector[1024]; // For variable pool
+    int value;
 } CatalogEntry;
 
 typedef struct CatalogHashtable {
