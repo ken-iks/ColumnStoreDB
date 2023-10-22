@@ -79,6 +79,7 @@ char* execute_DbOperator(DbOperator* query) {
 void handle_client(int client_socket) {
     int done = 0;
     int length = 0;
+    bool shutdown = false;
 
     log_info("Connected to socket: %d.\n", client_socket);
 
@@ -88,6 +89,8 @@ void handle_client(int client_socket) {
 
     // create the client context here
     ClientContext* client_context = NULL;
+
+    // create variable pool for a given client
     CatalogHashtable* variable_pool = NULL;
     allocate(&variable_pool, 10);
 
@@ -97,6 +100,7 @@ void handle_client(int client_socket) {
     // 3. Send status of the received message (OK, UNKNOWN_QUERY, etc)
     // 4. Send response to the request.
     do {
+        // receive query metadata
         length = recv(client_socket, &recv_message, sizeof(message), 0);
         if (length < 0) {
             log_err("Client connection closed!\n");
@@ -106,18 +110,27 @@ void handle_client(int client_socket) {
         }
 
         if (!done) {
+            // initialize receiving buffer
             char recv_buffer[recv_message.length + 1];
             length = recv(client_socket, recv_buffer, recv_message.length,0);
             recv_message.payload = recv_buffer;
             recv_message.payload[recv_message.length] = '\0';
 
+            // check for shutdown 
+            
+            if (strncmp(recv_message.payload, "shutdown", 8) == 0) {
+                log_info("-- Shutting down!\n");
+                shutdown = true;
+                break;
+            } 
+
             // 1. Parse command
             //    Query string is converted into a request for an database operator
-            DbOperator* query = parse_command(recv_message.payload, &send_message, client_socket, client_context, variable_pool);
+            char* result = parse_command(recv_message.payload, &send_message, client_socket, client_context, variable_pool);
 
             // 2. Handle request
             //    Corresponding database operator is executed over the query
-            char* result = execute_DbOperator(query);
+            //char* result = execute_DbOperator(query);
 
             send_message.length = strlen(result);
             char send_buffer[send_message.length + 1];
@@ -141,6 +154,10 @@ void handle_client(int client_socket) {
 
     log_info("Connection closed at socket %d!\n", client_socket);
     close(client_socket);
+    if (shutdown == true) {
+        deallocate(variable_pool);
+        exit(0);
+    }
 }
 
 /**

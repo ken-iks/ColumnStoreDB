@@ -1195,7 +1195,7 @@ DbOperator* parse_avg(char* query_command, char* handle, message* send_message, 
     int count = pvector->size;
 
     for (int i=0; i< count; i++) {
-        ret += atoi(pvector->bitvector[i]);
+        ret += pvector->bitvector[i];
     }
     // ret now has average
     ret /= count;
@@ -1207,7 +1207,7 @@ DbOperator* parse_avg(char* query_command, char* handle, message* send_message, 
     }
     strcpy(cat->name, handle);
 
-    strcpy(cat->value, ret);
+    cat->value = ret;
     put(variable_pool, *cat);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
@@ -1232,7 +1232,7 @@ DbOperator* parse_sum(char* query_command, char* handle, message* send_message, 
     int count = pvector->size;
 
     for (int i=0; i< count; i++) {
-        ret += atoi(pvector->bitvector[i]);
+        ret += pvector->bitvector[i];
     }
     // ret now has sum
     CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
@@ -1241,7 +1241,7 @@ DbOperator* parse_sum(char* query_command, char* handle, message* send_message, 
         return NULL;
     }
     strcpy(cat->name, handle);
-    strcpy(cat->value, ret);
+    cat->value = ret;
     put(variable_pool, *cat);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
@@ -1259,35 +1259,293 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
     
     // parse table input
     char* arg1 = next_token(command_index, &send_message->status);
-    // get value vector
-    CatalogEntry* pvector = get(variable_pool, arg1);
+    int length = strlen(arg1);
 
-    int ret = INT_MIN;
-    int count = pvector->size;
-    int pos[count];
+    // only one parameter
+    if (arg1[length-1] == ')') {
+        arg1 = trim_parenthesis(arg1);
+        // get value vector
+        CatalogEntry* vvector = get(variable_pool, arg1);
 
-    for (int i=0; i< count; i++) {
-        int temp = atoi(pvector->bitvector[i]);
-        if (temp >= ret) {
-            ret = temp;
+        int ret = INT_MIN;
+        int count = vvector->size;
+
+        for (int i=0; i < count; i++) {
+            int temp = vvector->bitvector[i];
+            if (temp >= ret) {
+                ret = temp;          
+            }
         }
+
+        // Object for first return val
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        strcpy(cat->name, handle);
+        cat->value = ret;
+        put(variable_pool, *cat);
     }
-    char** handle_index = &handle;
-    char* handle_copy = next_token(handle_index, &send_message->status);
-    char* handle_second = next_token(handle_index, &send_message->status);
-    // ret now has sum
-    CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
-    if (!cat) {
+    else {
+        char** handle_index = &handle;
+        char* handle_first = next_token(handle_index, &send_message->status);
+        char* handle_second = next_token(handle_index, &send_message->status);
+
+        // Val vector is arg2, pos vector is arg1
+        char* arg2 = next_token(command_index, &send_message->status);
+        arg2 = trim_parenthesis(arg2);
+
+        CatalogEntry* vvector = get(variable_pool, arg2);
+
+        int ret = INT_MIN;
+        int count = vvector->size;
+        
+        // If we are search through all of the vvector
+        if (strncmp(arg1, "null", 4) == 0) {
+            for (int i=0; i < count; i++) {
+                int temp = vvector->bitvector[i];
+                if (temp >= ret) {
+                    ret = temp;          
+                }
+            }
+        }
+        else {
+            CatalogEntry* pvector = get(variable_pool, arg1);
+            for (int i=0; i < count; i++) {
+                int temp = vvector->bitvector[i];
+                if (temp >= ret && pvector->bitvector[i] == INT_MAX) {
+                    ret = temp;          
+                }
+            }
+        }
+
+        // Object for first return val
+        CatalogEntry* positionlist = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!positionlist) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        // Find pos of all max values -> TODO: Technically this is searching through too many values in the second case
+        for (int i=0; i < count; i++) {
+            int temp = vvector->bitvector[i];
+            if (temp == ret) {
+                positionlist->bitvector[i] = INT_MAX;          
+            }
+            else {
+                positionlist->bitvector[i] = INT_MIN;
+            }
+        }
+
+        // Object for second return val
+        CatalogEntry* maxvalues = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!maxvalues) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        strcpy(positionlist->name, handle_first);
+        positionlist->size = count;
+
+        strcpy(maxvalues->name, handle_second);
+        maxvalues->value = ret;
+
+        put(variable_pool, *positionlist);
+        put(variable_pool, *maxvalues);
+    }
+
+    
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+DbOperator* parse_min(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    int length = strlen(arg1);
+
+    // only one parameter
+    if (arg1[length-1] == ')') {
+        arg1 = trim_parenthesis(arg1);
+        // get value vector
+        CatalogEntry* vvector = get(variable_pool, arg1);
+
+        int ret = INT_MAX;
+        int count = vvector->size;
+
+        for (int i=0; i < count; i++) {
+            int temp = vvector->bitvector[i];
+            if (temp <= ret) {
+                ret = temp;          
+            }
+        }
+
+        // Object for first return val
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        strcpy(cat->name, handle);
+        cat->value = ret;
+        put(variable_pool, *cat);
+    }
+    else {
+        char** handle_index = &handle;
+        char* handle_first = next_token(handle_index, &send_message->status);
+        char* handle_second = next_token(handle_index, &send_message->status);
+
+        // Val vector is arg2, pos vector is arg1
+        char* arg2 = next_token(command_index, &send_message->status);
+        arg2 = trim_parenthesis(arg2);
+
+        CatalogEntry* vvector = get(variable_pool, arg2);
+
+        int ret = INT_MAX;
+        int count = vvector->size;
+        
+        // If we are search through all of the vvector
+        if (strcmp(arg1, "null") == 0) {
+            for (int i=0; i < count; i++) {
+                int temp = vvector->bitvector[i];
+                if (temp <= ret) {
+                    ret = temp;          
+                }
+            }
+        }
+        else {
+            CatalogEntry* pvector = get(variable_pool, arg1);
+            for (int i=0; i < count; i++) {
+                int temp = vvector->bitvector[i];
+                if (temp <= ret && pvector->bitvector[i] == INT_MAX) {
+                    ret = temp;          
+                }
+            }
+        }
+
+        // Object for first return val
+        CatalogEntry* positionlist = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!positionlist) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        // Find pos of all min values -> TODO: Technically this is searching through too many values in the second case
+        for (int i=0; i < count; i++) {
+            int temp = vvector->bitvector[i];
+            if (temp == ret) {
+                positionlist->bitvector[i] = INT_MAX;          
+            }
+            else {
+                positionlist->bitvector[i] = INT_MIN;
+            }
+        }
+
+        // Object for second return val
+        CatalogEntry* maxvalues = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!maxvalues) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        strcpy(positionlist->name, handle_first);
+        positionlist->size = count;
+
+        strcpy(maxvalues->name, handle_second);
+        maxvalues->value = ret;
+
+        put(variable_pool, *positionlist);
+        put(variable_pool, *maxvalues);
+    }
+
+    
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+DbOperator* parse_add(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse parameters
+    char* arg1 = next_token(command_index, &send_message->status);
+    char* arg2 = next_token(command_index, &send_message->status);
+
+    CatalogEntry* vvector1 = get(variable_pool, arg1);
+    CatalogEntry* vvector2 = get(variable_pool, arg2);
+
+    CatalogEntry* retvector = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+    if (!retvector) {
         perror("Failed to allocate memory for CatalogEntry");
         return NULL;
     }
-    strcpy(cat->name, handle);
-    strcpy(cat->size, ret);
-    put(variable_pool, *cat);
+
+    int count = vvector1->size;
+
+    for (int i=0; i<count; i++) {
+        retvector->bitvector[i] = (vvector1->bitvector[i]) + (vvector2->bitvector[i]);
+    }
+
+    strcpy(retvector->name, handle);
+    retvector->size = count;
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
     return dbo;
 }
+
+DbOperator* parse_sub(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    
+    
+    // parse parameters
+    char* arg1 = next_token(command_index, &send_message->status);
+    char* arg2 = next_token(command_index, &send_message->status);
+
+    CatalogEntry* vvector1 = get(variable_pool, arg1);
+    CatalogEntry* vvector2 = get(variable_pool, arg2);
+
+    CatalogEntry* retvector = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+    if (!retvector) {
+        perror("Failed to allocate memory for CatalogEntry");
+        return NULL;
+    }
+
+    int count = vvector1->size;
+
+
+    for (int i=0; i<count; i++) {
+        retvector->bitvector[i] = (vvector1->bitvector[i]) - (vvector2->bitvector[i]);
+    }
+
+    strcpy(retvector->name, handle);
+    retvector->size = count;
+
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+// TODO: MILESTONE 2 BATCHING QUERIES!!!
 
 /**
  * parse_command takes as input the send_message from the client and then
@@ -1300,7 +1558,7 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
  *      How would you add a new command type to parse? 
  *      What if such command requires multiple arguments?
  **/
-DbOperator* parse_command(char* query_command, message* send_message, int client_socket, ClientContext* context, CatalogHashtable* variable_pool) {
+char* parse_command(char* query_command, message* send_message, int client_socket, ClientContext* context, CatalogHashtable* variable_pool) {
     // a second option is to malloc the dbo here (instead of inside the parse commands). Either way, you should track the dbo
     // and free it when the variable is no longer needed. 
     DbOperator *dbo = NULL; // = malloc(sizeof(DbOperator));
@@ -1354,29 +1612,34 @@ DbOperator* parse_command(char* query_command, message* send_message, int client
     } else if (strncmp(query_command, "print", 5) == 0) {
         query_command += 5;
         dbo = parse_print(query_command, send_message, variable_pool);
-    } else if (strncmp(query_command, "avg", 3) == 0) {
+    } else if (handle != NULL && strncmp(query_command, "avg", 3) == 0) {
         query_command += 3;
         dbo = parse_avg(query_command, handle, send_message, variable_pool); 
-    } else if (strncmp(query_command, "sum", 3) == 0) {
+    } else if (handle != NULL && strncmp(query_command, "sum", 3) == 0) {
         query_command += 3;
         dbo = parse_sum(query_command, handle, send_message, variable_pool); 
-    } else if (strncmp(query_command, "max", 3) == 0) {
+    } else if (handle != NULL && strncmp(query_command, "max", 3) == 0) {
         query_command += 3;
-        parse_max(); //TODO
-    } else if (strncmp(query_command, "min", 3) == 0) {
+        dbo = parse_max(query_command, handle, send_message, variable_pool); 
+    } else if (handle != NULL && strncmp(query_command, "min", 3) == 0) {
         query_command += 3;
-        parse_min(); //TODO
-    } else if (strncmp(query_command, "add", 3) == 0) {
+        dbo = parse_min(query_command, handle, send_message, variable_pool); 
+    } else if (handle != NULL && strncmp(query_command, "add", 3) == 0) {
         query_command += 3;
-        parse_add(); //TODO
-    } else if (strncmp(query_command, "sub", 3) == 0) {
+        dbo = parse_add(query_command, handle, send_message, variable_pool); 
+    } else if (handle != NULL && strncmp(query_command, "sub", 3) == 0) {
         query_command += 3;
-        parse_sub(); //TODO
-    } if (dbo == NULL) {
-        return dbo;
+        dbo = parse_sub(query_command, handle, send_message, variable_pool); 
+    }  else if (strncmp(query_command, "batch_queries", 13) == 0) {
+        query_command += 13;
+        dbo = parse_batch_queries(query_command, send_message);
+    } else if (strncmp(query_command, "batch_execute", 13) == 0) {
+        query_command += 13;
+        dbo = parse_batch_execute(query_command, send_message);
     }
     
     dbo->client_fd = client_socket;
     dbo->context = context;
-    return dbo;
+    free(dbo);
+    return "AHHH";
 }

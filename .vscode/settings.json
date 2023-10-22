@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "__functional_03": "c",
+        "__hash_table": "c",
+        "__split_buffer": "c",
+        "algorithm": "c",
+        "memory_resource": "c",
+        "functional": "c",
+        "list": "c",
+        "memory": "c",
+        "string": "c",
+        "unordered_map": "c",
+        "vector": "c"
+    }
+}
