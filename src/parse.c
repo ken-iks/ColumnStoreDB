@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <limits.h>
+#include <pthread.h>
 #define MAX_LINE_SIZE 1024
 #define DELIMITER ","
 
@@ -645,7 +646,6 @@ int add_element_to_file(char* fname, char* abspath, char* val) {
 int add_element_to_file2(char* filename, char* val) {
 
     char* name = getName(filename);
-    
 
     FILE* file1 = fopen("catalogue.txt", "r");
     
@@ -775,6 +775,11 @@ DbOperator* parse_load(char* query_command, message* send_message) {
         //TODO: CHECK IF THE THING WE WANT TO LOAD ACTUALLY EXISTS
 
         FILE* csv = fopen(file_name, "r");
+        if (!csv) {
+            perror("Error opening file");
+            return -1;
+            }
+
         char line[1024];
         char *headerTokens[100];
         int index = 0;
@@ -881,12 +886,12 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         high = trim_parenthesis(high);
         int ilow;
         int ihigh;
-        if (!low) {
+        if (strcmp(low, "null") == 0) {
             ilow = INT_MIN;
         } else {
             ilow = atoi(low);
         }
-        if (!high) {
+        if (strcmp(high, "null") == 0) {
             ihigh = INT_MAX;
         } else {
             ihigh = atoi(high);
@@ -894,6 +899,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
 
         char line[1024];
         // Skip the first line
+
         if (!fgets(line, sizeof(line), file)) {
             perror("Error reading file");
             fclose(file);
@@ -922,7 +928,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
             // Now 'line' contains the current line from the file without the newline character
             // For our bitvector, false === INT_MIN and true === INT_MAX (this allows us to use the bitvector object for a value vector)
             int val;
-            if (lineval < ihigh && lineval > ilow) {
+            if (lineval < ihigh && lineval >= ilow) {
                 val = INT_MAX;
             }
             else {
@@ -1109,18 +1115,28 @@ int print_column(char* token) {
 
 int print_vector(char* token, CatalogHashtable* variable_pool) {
     CatalogEntry* vvector = get(variable_pool, token);
-    FILE *combinedFile = fopen("combined_data.txt", "a");
+    FILE *combinedFile = fopen("combined_data.txt", "w");
     if (!combinedFile) {
         perror("Error opening combined file");
         return 0;
     }
-    int size = vvector->size;
-    for (int i=0; i<size; i++){
-        char buffer[50];
-        snprintf(buffer, sizeof(buffer), "%d", vvector->bitvector[i]);
+    // check if it simply a return value and not a full vector
+    if (vvector->has_value == true) {
+        char buffer[12];
+        snprintf(buffer, sizeof(buffer), "%.2f", vvector->value);
         fputs(buffer, combinedFile);
-        fputc(',', combinedFile);
     }
+    int size = vvector->size;
+    for (int i=0; i<size; i++) {
+        if (vvector->bitvector[i] != INT_MIN && vvector->bitvector[i] != INT_MAX) {
+            char buffer[12];
+            snprintf(buffer, sizeof(buffer), "%d", vvector->bitvector[i]);
+            /*log_err(buffer);*/
+            fputs(buffer, combinedFile);
+            fputs("\n", combinedFile);
+        }
+    }
+    fputc('\n', combinedFile);
     fclose(combinedFile);
     return 1;
 }
@@ -1129,7 +1145,8 @@ int print_vector(char* token, CatalogHashtable* variable_pool) {
 parse_print will print out one or more vectors in tabular format (X,Y,Z...)
 takes in a column name or a vector name 
 */
-DbOperator* parse_print(char* query_command, message* send_message, CatalogHashtable* variable_pool) {
+//TODO: HANDLE MULTIPLE FILES PROPERLY
+char* parse_print(char* query_command, message* send_message, CatalogHashtable* variable_pool) {
     if (strncmp(query_command, "(", 1) != 0) {
         send_message->status = UNKNOWN_COMMAND;
         return NULL;
@@ -1163,20 +1180,43 @@ DbOperator* parse_print(char* query_command, message* send_message, CatalogHasht
         return NULL;
     }
 
+    // Seek to the end of the file to determine the file size
+    fseek(readCombined, 0, SEEK_END);
+    int filelen = ftell(readCombined);
+    // Reset the file position indicator to the beginning of the file
+    rewind(readCombined);
+
+    // Allocate memory for the entire content
+    char* ret_buffer = (char*)malloc((filelen + 1) * sizeof(char));
+
+    // Read the file into the buffer
+    size_t readLength = fread(ret_buffer, 1, filelen, readCombined);
+    if (readLength != filelen) {
+        // Error handling for partial read
+        perror("Error reading file");
+        free(ret_buffer);
+        fclose(readCombined);
+        return NULL;
+    }
+
+    // Null-terminate the buffer
+    ret_buffer[filelen] = '\0';
+
+    /*
     // Read and process each line of the combined file
     char line[1024];
     while (fgets(line, sizeof(line), readCombined)) {
         // Process each line as needed, e.g., print, parse further, etc.
         fprintf(stdout, "%s", line);
     }
+    */
 
     // Close the file when done
     fclose(readCombined);
-    DbOperator* dbo = malloc(sizeof(DbOperator));
-    return dbo;
+    return ret_buffer;
 }
 
-//TODO:
+
 DbOperator* parse_avg(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
     if (strncmp(query_command, "(", 1) != 0) {
         send_message->status = UNKNOWN_COMMAND;
@@ -1188,17 +1228,24 @@ DbOperator* parse_avg(char* query_command, char* handle, message* send_message, 
     
     // parse table input
     char* arg1 = next_token(command_index, &send_message->status);
+    arg1 = trim_parenthesis(arg1);
+    
     // get value vector
     CatalogEntry* pvector = get(variable_pool, arg1);
 
-    int ret = 0;
+    float ret;
+    int sum = 0;
     int count = pvector->size;
+    int div = 0;
 
     for (int i=0; i< count; i++) {
-        ret += pvector->bitvector[i];
+        if (pvector->bitvector[i] < INT_MAX && pvector->bitvector[i] > INT_MIN) {
+            sum += pvector->bitvector[i];
+            div += 1;
+        }
     }
     // ret now has average
-    ret /= count;
+    ret = (float) sum / div;
 
     CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
     if (!cat) {
@@ -1206,7 +1253,7 @@ DbOperator* parse_avg(char* query_command, char* handle, message* send_message, 
         return NULL;
     }
     strcpy(cat->name, handle);
-
+    cat->has_value = true;
     cat->value = ret;
     put(variable_pool, *cat);
 
@@ -1547,6 +1594,58 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
 
 // TODO: MILESTONE 2 BATCHING QUERIES!!!
 
+// Initializes the queue.
+
+void queue_init(Queue* queue) {
+    node_t* dummy = malloc(sizeof(node_t));
+    dummy->next = NULL;
+    queue->head = queue->tail = dummy;
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+// Push a new query to the queue.
+void queue_push(Queue* queue, SelectObject query) {
+    node_t* new_node = malloc(sizeof(node_t));
+    if (new_node == NULL) {
+        exit(1); // handle memory allocation failure
+    }
+    new_node->query = query;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+    queue->tail->next = new_node;
+    queue->tail = new_node;
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+// Pop a query from the queue. This call is blocking.
+SelectObject queue_pop(Queue* queue) {
+    pthread_mutex_lock(&queue->mutex);
+    while (queue->head == queue->tail) {
+        // Wait until the queue is non-empty.
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+    node_t* old_head = queue->head;
+    node_t* new_head = old_head->next;
+    SelectObject query = new_head->query; // this is the actual "data" being popped
+    queue->head = new_head;
+    pthread_mutex_unlock(&queue->mutex);
+    free(old_head);
+    return query;
+}
+/*
+DbOperator* add_select_to_query(char* query_command, char* handle, message* send_message, CatalogEntry* variable_pool, Queue* batch_queue) {
+
+}
+
+DbOperator* parse_batch_execute(char* query_command, message* send_message, ClientContext* context) {
+}
+*/
+
+
+
 /**
  * parse_command takes as input the send_message from the client and then
  * parses it into the appropriate query. Stores into send_message the
@@ -1558,7 +1657,8 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
  *      How would you add a new command type to parse? 
  *      What if such command requires multiple arguments?
  **/
-char* parse_command(char* query_command, message* send_message, int client_socket, ClientContext* context, CatalogHashtable* variable_pool) {
+char* parse_command(char* query_command, message* send_message, int client_socket, ClientContext* context, CatalogHashtable* variable_pool,
+Queue* batch_queue) {
     // a second option is to malloc the dbo here (instead of inside the parse commands). Either way, you should track the dbo
     // and free it when the variable is no longer needed. 
     DbOperator *dbo = NULL; // = malloc(sizeof(DbOperator));
@@ -1605,14 +1705,19 @@ char* parse_command(char* query_command, message* send_message, int client_socke
         dbo = parse_load(query_command, send_message);
     } else if (handle != NULL && (strncmp(query_command, "select", 6) == 0)) {
         query_command += 6;
-        dbo = parse_select(query_command, handle, send_message, variable_pool);
+        if (context->is_batch) {
+            //dbo = add_select_to_queue(query_command, handle, send_message, variable_pool, batch_queue); //TODO:
+        }
+        else {
+            dbo = parse_select(query_command, handle, send_message, variable_pool);
+        }
     } else if (handle != NULL && (strncmp(query_command, "fetch", 5) == 0)) {
         query_command += 5;
         dbo = parse_fetch(query_command, handle, send_message, variable_pool);
     } else if (strncmp(query_command, "print", 5) == 0) {
         query_command += 5;
-        dbo = parse_print(query_command, send_message, variable_pool);
-    } else if (handle != NULL && strncmp(query_command, "avg", 3) == 0) {
+        return parse_print(query_command, send_message, variable_pool);
+    } else if (handle != NULL && (strncmp(query_command, "avg", 3) == 0)) {
         query_command += 3;
         dbo = parse_avg(query_command, handle, send_message, variable_pool); 
     } else if (handle != NULL && strncmp(query_command, "sum", 3) == 0) {
@@ -1630,16 +1735,13 @@ char* parse_command(char* query_command, message* send_message, int client_socke
     } else if (handle != NULL && strncmp(query_command, "sub", 3) == 0) {
         query_command += 3;
         dbo = parse_sub(query_command, handle, send_message, variable_pool); 
-    }  else if (strncmp(query_command, "batch_queries", 13) == 0) {
+    }  /* else if (strncmp(query_command, "batch_queries", 13) == 0) {
         query_command += 13;
-        dbo = parse_batch_queries(query_command, send_message);
+        context->is_batch = true;
     } else if (strncmp(query_command, "batch_execute", 13) == 0) {
         query_command += 13;
-        dbo = parse_batch_execute(query_command, send_message);
-    }
-    
-    dbo->client_fd = client_socket;
-    dbo->context = context;
-    free(dbo);
-    return "AHHH";
+        dbo = parse_batch_execute(query_command, send_message, context);
+    } */
+  
+    return "";
 }

@@ -29,6 +29,9 @@ SOFTWARE.
 #include <stdbool.h>
 #include <stdio.h>
 
+// My additions
+#include <pthread.h>
+
 // Limits the size of a name in our database to 64 characters
 #define MAX_SIZE_NAME 64
 #define HANDLE_MAX_SIZE 64
@@ -98,12 +101,10 @@ typedef struct Db {
     size_t tables_capacity;
 } Db;
 
-
 typedef struct IndexEntry {
     char* path;
     long offset;
 } IndexEntry;
-
 
 /**
  * Error codes used to indicate the outcome of an API call
@@ -179,7 +180,11 @@ typedef struct ClientContext {
     GeneralizedColumnHandle* chandle_table;
     int chandles_in_use;
     int chandle_slots;
+    // So we can know whether or not we are within a batch query
+    bool is_batch;
 } ClientContext;
+
+
 
 /**
  * comparator
@@ -272,14 +277,37 @@ typedef struct CatalogEntry {
     int line; // which line this entry is on the catalog
     struct CatalogEntry *next;  // In case of collisions, we use chaining
     int bitvector[1024]; // For variable pool
-    int value;
+    bool has_value;
+    float value; // For arithmetic operators
 } CatalogEntry;
 
 typedef struct CatalogHashtable {
     CatalogEntry* table[101]; // An array of pointers to entries
 } CatalogHashtable;
 
-typedef enum MathType { AVG, SUM, MAX, MIN, ADD, SUB } MathType;
+// Structure for shared scan context.
+typedef struct SelectObject{
+    char* filepath; // Reference to the data being scanned.
+    int minval; // Starting index of the scan.
+    int maxval; // Ending index of the scan.
+    CatalogEntry* results; // Array to store scan results (e.g., matching indices).
+    int resultCount; // Number of matches found.
+    pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
+} SelectObject;
+
+// A node in the queue.
+typedef struct node {
+    SelectObject query;
+    struct node* next;
+} node_t;
+
+// A thread-safe queue with mutex.
+typedef struct Queue {
+    node_t* head;
+    node_t* tail;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} Queue;
 
 /* 
  * Use this command to see if databases that were persisted start up properly. If files

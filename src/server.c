@@ -88,11 +88,16 @@ void handle_client(int client_socket) {
     message recv_message;
 
     // create the client context here
-    ClientContext* client_context = NULL;
+    ClientContext* client_context = (ClientContext*) malloc(sizeof(ClientContext));
+    client_context->is_batch = false;
 
     // create variable pool for a given client
     CatalogHashtable* variable_pool = NULL;
     allocate(&variable_pool, 10);
+
+    // initialize cue for batch queries
+    Queue* batch_queue = NULL;
+    //queue_init(batch_queue);
 
     // Continually receive messages from client and execute queries.
     // 1. Parse the command
@@ -117,21 +122,26 @@ void handle_client(int client_socket) {
             recv_message.payload[recv_message.length] = '\0';
 
             // check for shutdown 
-            
             if (strncmp(recv_message.payload, "shutdown", 8) == 0) {
                 log_info("-- Shutting down!\n");
                 shutdown = true;
+                done = 1;
                 break;
             } 
+            
 
             // 1. Parse command
             //    Query string is converted into a request for an database operator
-            char* result = parse_command(recv_message.payload, &send_message, client_socket, client_context, variable_pool);
+            char* result = parse_command(recv_message.payload, &send_message, client_socket, client_context, variable_pool, batch_queue);
 
             // 2. Handle request
             //    Corresponding database operator is executed over the query
             //char* result = execute_DbOperator(query);
 
+            if (result == NULL) {
+                result = "";
+            }
+            
             send_message.length = strlen(result);
             char send_buffer[send_message.length + 1];
             strcpy(send_buffer, result);
