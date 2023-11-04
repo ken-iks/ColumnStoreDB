@@ -276,7 +276,8 @@ typedef struct CatalogEntry {
     int size; // size of bit vector (and TODO: size of table)
     int line; // which line this entry is on the catalog
     struct CatalogEntry *next;  // In case of collisions, we use chaining
-    int bitvector[1024]; // For variable pool
+    bool in_vpool;
+    int bitvector[10240]; // For variable pool
     bool has_value;
     float value; // For arithmetic operators
 } CatalogEntry;

@@ -50,7 +50,7 @@ char* next_token(char** tokenizer, message_status* status) {
 
 /**
  * This method takes a char* filepath and maps it to a bucket in our Catalogue Hashtable
- * We use a division remainder method gotten from chatgpt - table size currently 101 (subject to change)
+ * We use a division remainder method - table size currently 101 (subject to change)
 */
 
 unsigned long hash(const char *str) {
@@ -130,8 +130,17 @@ int put(CatalogHashtable* ht, CatalogEntry value) {
             return 0;
         }
         else {
-            // COLLISION CASE
-            return add_node(ht->table[buck], new_node);
+            // COLLISION CASE: TODO - FIX. MAYBE OVERCOMMITING? DONT KEEP ADDING TO CATALOGUE?
+            // if need to add a column to the hashtable
+            if (new_node->in_vpool != true) {
+                return add_node(ht->table[buck], new_node);
+            }
+            // else if need to replace a repeated variable name 
+            // (TODO: this is actually comparing hashed names. Hopefully wont cause problems)
+            else {
+                ht->table[buck] = new_node;
+                return 0;
+            }
         }
             }
     return -1;
@@ -232,6 +241,7 @@ CatalogEntry* line_to_entry(char* line, int line_num){
         fprintf(stderr, "Error: Malformed line: %s in line_to_entry function\n", line);
         return NULL;
     }
+
     //fprintf(stderr, "Valid line: %s in line_to_entry function\n", line);
 
     CreateType type = str_to_type(typestring);
@@ -273,11 +283,21 @@ CatalogHashtable* populate_catalog(FILE* file) {
 
     char* data = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     char *buffer = malloc(sb.st_size);  // +1 for null-terminator
+
+    if (data == MAP_FAILED) {
+        perror("mmap");
+        close(fd);
+        free(buffer); // Don't forget to free the buffer if mmap fails.
+        return NULL;
+    }
+
     if (!buffer) {
         perror("malloc");
         close(fd);
+        free(buffer);
         return NULL;
     }
+
     memcpy(buffer, data, sb.st_size);
     //buffer[sb.st_size] = '\0';  // Null-terminate the buffer
 
@@ -306,6 +326,7 @@ CatalogHashtable* populate_catalog(FILE* file) {
         count++;
     }
     munmap(data, sb.st_size);
+    free(buffer);
     close(fd);
     return ht;
 }
@@ -641,16 +662,17 @@ int add_element_to_file(char* fname, char* abspath, char* val) {
     free(fullpath);
     return 0;
 }
+
 // Adds an element with filename = db.tbl.cl to correct file granted that cl exists in catalog
 // Primarily used in 'load'
 int add_element_to_file2(char* filename, char* val) {
 
-    char* name = getName(filename);
+    char* name = getName(filename); 
 
     FILE* file1 = fopen("catalogue.txt", "r");
-    
+
     CatalogHashtable* ht = populate_catalog(file1);
-    
+
     CatalogEntry* this_table = get(ht, name);
 
     if (!this_table) {
@@ -658,6 +680,21 @@ int add_element_to_file2(char* filename, char* val) {
         fprintf(stderr, "Error retriving column: %s", name);
         return -1;
     }
+
+    // To check collisions
+    char* pathcopy = makePath(filename, _COLUMN);
+
+    // Check for collisions
+    while (this_table != NULL && this_table->filepath == NULL || strcmp(this_table->filepath, pathcopy) != 0) {
+        //fprintf(stdout, "%s\n", (this_table)->filepath);
+        this_table = this_table->next;
+    }
+
+    if (this_table == NULL) {
+        perror("Error retrieving correct column");
+        return -1;
+    }
+
     char* fullpath = (*this_table).filepath;
     strcat(fullpath, ".txt");
 
@@ -666,7 +703,9 @@ int add_element_to_file2(char* filename, char* val) {
         perror("Error opening file");
         return -1;
         }
+
     fprintf(file, "%s\n", val);
+    deallocate(ht);
     fclose(file);
 
     return 0;
@@ -686,18 +725,28 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
         char** command_index = &query_command;
         // parse table input
         char* table_name = next_token(command_index, &send_message->status);
+        char* catname = getName(table_name);
+        char* catpath = makePath(table_name, _TABLE);
+
         if (send_message->status == INCORRECT_FORMAT) {
             return NULL;
         }
+
         // find entry for this table in catalog
         FILE* file = fopen("catalogue.txt", "a");
         CatalogHashtable* ht = populate_catalog(file);
-        CatalogEntry* this_table = get(ht, table_name);
+
+        CatalogEntry* this_table = get(ht, catname);
 
         if (!this_table) {
             return NULL;
         }
-        // very minimal validation
+
+        // Check for collisions
+        while (strcmp((*this_table).filepath, catpath) != 0) {
+            this_table = this_table->next;
+        }
+
         char* path = (*this_table).filepath;
 
         // find paths of columns within this table
@@ -720,30 +769,7 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
         closedir(dir);
 
         DbOperator* dbo = malloc(sizeof(DbOperator));
-        /*
-        // lookup the table and make sure it exists. 
-        Table* insert_table = lookup_table(table_name);
-        if (insert_table == NULL) {
-            send_message->status = OBJECT_NOT_FOUND;
-            return NULL;
-        }
-        // make insert operator. 
-        DbOperator* dbo = malloc(sizeof(DbOperator));
-        dbo->type = INSERT;
-        dbo->operator_fields.insert_operator.table = insert_table;
-        dbo->operator_fields.insert_operator.values = malloc(sizeof(int) * insert_table->col_count);
-        // parse inputs until we reach the end. Turn each given string into an integer. 
-        while ((token = strsep(command_index, ",")) != NULL) {
-            int insert_val = atoi(token);
-            dbo->operator_fields.insert_operator.values[columns_inserted] = insert_val;
-            columns_inserted++;
-        }
-        // check that we received the correct number of input values
-        if (columns_inserted != insert_table->col_count) {
-            send_message->status = INCORRECT_FORMAT;
-            free (dbo);
-            return NULL;
-        }  */
+ 
         return dbo;
     } else {
         send_message->status = UNKNOWN_COMMAND;
@@ -783,13 +809,14 @@ DbOperator* parse_load(char* query_command, message* send_message) {
         char line[1024];
         char *headerTokens[100];
         int index = 0;
-
+        //loop through first line to get headers
         if (fgets(line, sizeof(line), csv)) {
+            // strip newline 
             size_t len = strlen(line);
             if (len > 0 && line[len - 1] == '\n') {
                 line[len - 1] = '\0';
             }
-
+            // populate headertokens array
             char *token, *stringp, *tofree;
             tofree = stringp = strdup(line);
             while ((token = strsep(&stringp, ",")) != NULL) {
@@ -799,6 +826,7 @@ DbOperator* parse_load(char* query_command, message* send_message) {
             free(tofree);
         }
 
+        //loop through rest of the lines
         while (fgets(line, sizeof(line), csv)) {
             char *lineTokens[100];
             int lineIndex = 0;
@@ -811,18 +839,21 @@ DbOperator* parse_load(char* query_command, message* send_message) {
             char *token, *stringp, *tofree;
             tofree = stringp = strdup(line);
             while ((token = strsep(&stringp, ",")) != NULL) {
-                lineTokens[lineIndex] = token;
+                if (headerTokens[lineIndex] != NULL && token != NULL) {
+                    add_element_to_file2(headerTokens[lineIndex], strdup(token));
+                }
+                //lineTokens[lineIndex] = token;
                 lineIndex++;
             }
 
-            for (int i = 0; i < lineIndex; i++) {
+            /*for (int i = 0; i < lineIndex; i++) {
                 if (headerTokens[i] != NULL && lineTokens[i] != NULL) {
                     add_element_to_file2(headerTokens[i], lineTokens[i]);
                 }
                 else {
                     break;
                 }
-            }
+            } */
 
             free(tofree);
         }
@@ -861,11 +892,17 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
     if (contains_dot(arg1)) {
         // Dealing with column
         char* name = getName(arg1);
+        char* catpath = makePath(arg1, _COLUMN);
         
         // retrieve filename from catalog
         FILE* file1 = fopen("catalogue.txt", "r");
         CatalogHashtable* ht = populate_catalog(file1);
         CatalogEntry* this_table = get(ht, name);
+
+        // Check for collisions
+        while (strcmp((*this_table).filepath, catpath) != 0) {
+            this_table = this_table->next;
+        }
 
         if (!this_table) {
             //perror("Error retriving column");
@@ -939,6 +976,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
 
         }
         cat->size = count;
+        cat->in_vpool = true;
         
         fclose(file);
         put(variable_pool, *cat);
@@ -985,7 +1023,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
             }
             cat->bitvector[i] = val;
         }
-        
+        cat->in_vpool = true;
         put(variable_pool, *cat);
     }
 
@@ -1008,6 +1046,7 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
     bitvname = trim_parenthesis(bitvname);
 
     char* name = getName(colname);
+    char* catpath = makePath(colname, _COLUMN);
     
     // retrieve filename from catalog
     FILE* file1 = fopen("catalogue.txt", "r");
@@ -1019,6 +1058,12 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         fprintf(stderr, "Error retriving column: %s", name);
         return NULL;
     }
+
+    // Check for collisions
+    while (strcmp((*this_table).filepath, catpath) != 0) {
+        this_table = this_table->next;
+    }
+
     char* fullpath = (*this_table).filepath;
     strcat(fullpath, ".txt");
     // open column file
@@ -1055,6 +1100,7 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
             line[len - 1] = '\0';
         }
         int lineval = atoi(line);
+        
         // Now 'line' contains the current line from the file without the newline character
         if (pvector->bitvector[count] != INT_MIN) {
             cat->bitvector[count] = lineval;
@@ -1065,6 +1111,7 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         count++;
     }
     cat->size = count;
+    cat->in_vpool = true;
 
     put(variable_pool, *cat);
 
@@ -1202,15 +1249,6 @@ char* parse_print(char* query_command, message* send_message, CatalogHashtable* 
     // Null-terminate the buffer
     ret_buffer[filelen] = '\0';
 
-    /*
-    // Read and process each line of the combined file
-    char line[1024];
-    while (fgets(line, sizeof(line), readCombined)) {
-        // Process each line as needed, e.g., print, parse further, etc.
-        fprintf(stdout, "%s", line);
-    }
-    */
-
     // Close the file when done
     fclose(readCombined);
     return ret_buffer;
@@ -1229,32 +1267,86 @@ DbOperator* parse_avg(char* query_command, char* handle, message* send_message, 
     // parse table input
     char* arg1 = next_token(command_index, &send_message->status);
     arg1 = trim_parenthesis(arg1);
-    
-    // get value vector
-    CatalogEntry* pvector = get(variable_pool, arg1);
+    CatalogEntry* pvector;
 
+    //TODO: IN THE CASE THAT WE WANT AVERAGE OF A COLUMN - SO LOOK FOR IT IN CATALOG THEN DO SAME THING
     float ret;
     int sum = 0;
-    int count = pvector->size;
     int div = 0;
+    int count;
+    // If column
+    if (contains_dot(arg1)) {
+        char* name = getName(arg1);
+        
+        // retrieve filename from catalog
+        FILE* file1 = fopen("catalogue.txt", "r");
+        CatalogHashtable* ht = populate_catalog(file1);
+        pvector = get(ht, name);
+        char* catpath = makePath(arg1, _COLUMN);
 
-    for (int i=0; i< count; i++) {
-        if (pvector->bitvector[i] < INT_MAX && pvector->bitvector[i] > INT_MIN) {
-            sum += pvector->bitvector[i];
-            div += 1;
+        while (strcmp((*pvector).filepath, catpath) != 0) {
+            pvector = pvector->next;
+        }
+
+        char* fullpath = (*pvector).filepath;
+        strcat(fullpath, ".txt");
+
+        // open column file
+        FILE* file = fopen(fullpath, "r");
+        if (!file) {
+            perror("Error opening file");
+            return NULL;
+            }
+        char line[1024];
+        //skip first line
+        if (!fgets(line, sizeof(line), file)) {
+            perror("Error reading file");
+            fclose(file);
+            return 0;
+        }
+        //loop through the rest
+        while (fgets(line, sizeof(line), file)) {
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') {
+                line[len - 1] = '\0';
+            }
+            int lineval = atoi(line);
+            if (lineval > INT_MIN && lineval < INT_MAX) {
+                sum += lineval;
+                div++;
+            }
+        }
+        // close column file
+        fclose(file1);
+    }
+    // If value vector
+    else {
+        // get value vector
+        pvector = get(variable_pool, arg1);
+        int count = pvector->size;
+        for (int i=0; i< count; i++) {
+            if (pvector->bitvector[i] < INT_MAX && pvector->bitvector[i] > INT_MIN) {
+                sum += pvector->bitvector[i];
+                div += 1;
+            }
         }
     }
+    
+
     // ret now has average
     ret = (float) sum / div;
 
     CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+
     if (!cat) {
         perror("Failed to allocate memory for CatalogEntry");
         return NULL;
     }
+
     strcpy(cat->name, handle);
     cat->has_value = true;
     cat->value = ret;
+    cat->in_vpool = true;
     put(variable_pool, *cat);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
@@ -1269,26 +1361,80 @@ DbOperator* parse_sum(char* query_command, char* handle, message* send_message, 
     query_command++;
     char** command_index = &query_command;
     
-    
     // parse table input
     char* arg1 = next_token(command_index, &send_message->status);
-    // get value vector
-    CatalogEntry* pvector = get(variable_pool, arg1);
+    arg1 = trim_parenthesis(arg1);
+    CatalogEntry* pvector;
 
     int ret = 0;
-    int count = pvector->size;
+    // if column
+    if (contains_dot(arg1)) {
+        char* name = getName(arg1);
+        
+        // retrieve filename from catalog
+        FILE* file1 = fopen("catalogue.txt", "r");
+        CatalogHashtable* ht = populate_catalog(file1);
+        pvector = get(ht, name);
 
-    for (int i=0; i< count; i++) {
-        ret += pvector->bitvector[i];
+        char* catpath = makePath(arg1, _COLUMN);
+
+        while (strcmp((*pvector).filepath, catpath) != 0) {
+            pvector = pvector->next;
+        }
+
+        char* fullpath = (*pvector).filepath;
+        strcat(fullpath, ".txt");
+
+        // open column file
+        FILE* file = fopen(fullpath, "r");
+        if (!file) {
+            perror("Error opening file");
+            return NULL;
+            }
+        char line[1024];
+        //skip first line
+        if (!fgets(line, sizeof(line), file)) {
+            perror("Error reading file");
+            fclose(file);
+            return 0;
+        }
+        //loop through the rest
+        while (fgets(line, sizeof(line), file)) {
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') {
+                line[len - 1] = '\0';
+            }
+            int lineval = atoi(line);
+            if (lineval > INT_MIN && lineval < INT_MAX) {
+                ret += lineval;
+            }
+        }
+        // close column file
+        fclose(file1);
     }
+    // if vector
+    else {
+        pvector = get(variable_pool, arg1);
+        int count = pvector->size;
+
+        for (int i=0; i< count; i++) {
+            if (pvector->bitvector[i] < INT_MAX && pvector->bitvector[i] > INT_MIN) {
+                ret += pvector->bitvector[i];
+            }
+        }
+    }
+
     // ret now has sum
     CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
     if (!cat) {
         perror("Failed to allocate memory for CatalogEntry");
         return NULL;
     }
+
     strcpy(cat->name, handle);
+    cat->has_value = true;
     cat->value = ret;
+    cat->in_vpool = true;
     put(variable_pool, *cat);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
@@ -1310,19 +1456,71 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
 
     // only one parameter
     if (arg1[length-1] == ')') {
-        arg1 = trim_parenthesis(arg1);
-        // get value vector
-        CatalogEntry* vvector = get(variable_pool, arg1);
-
         int ret = INT_MIN;
-        int count = vvector->size;
 
-        for (int i=0; i < count; i++) {
-            int temp = vvector->bitvector[i];
-            if (temp >= ret) {
-                ret = temp;          
+        arg1 = trim_parenthesis(arg1);
+        if (!contains_dot(arg1)) {
+            // get value vector
+            CatalogEntry* vvector = get(variable_pool, arg1);
+
+            int count = vvector->size;
+
+            for (int i=0; i < count; i++) {
+                if (vvector->bitvector[i] < INT_MAX && vvector->bitvector[i] > INT_MIN) {
+                    int temp = vvector->bitvector[i];
+                    if (temp >= ret) {
+                        ret = temp;          
+                    }
+                }
             }
         }
+        else {
+            char* name = getName(arg1);
+            
+            // retrieve filename from catalog
+            FILE* file1 = fopen("catalogue.txt", "r");
+            CatalogHashtable* ht = populate_catalog(file1);
+            CatalogEntry* pvector = get(ht, name);
+
+            char* catpath = makePath(arg1, _COLUMN);
+
+            while (strcmp((*pvector).filepath, catpath) != 0) {
+                pvector = pvector->next;
+            }
+
+            char* fullpath = (*pvector).filepath;
+            strcat(fullpath, ".txt");
+
+            // open column file
+            FILE* file = fopen(fullpath, "r");
+            if (!file) {
+                perror("Error opening file");
+                return NULL;
+                }
+            char line[1024];
+            //skip first line
+            if (!fgets(line, sizeof(line), file)) {
+                perror("Error reading file");
+                fclose(file);
+                return 0;
+            }
+            //loop through the rest
+            while (fgets(line, sizeof(line), file)) {
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') {
+                    line[len - 1] = '\0';
+                }
+                int lineval = atoi(line);
+                if (lineval > INT_MIN && lineval < INT_MAX) {
+                    if (lineval >= ret) {
+                        ret = lineval;
+                    }
+                }
+            }
+            // close column file
+            fclose(file1);   
+        }
+
 
         // Object for first return val
         CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
@@ -1333,6 +1531,8 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
 
         strcpy(cat->name, handle);
         cat->value = ret;
+        cat->has_value = true;
+        cat->in_vpool = true;
         put(variable_pool, *cat);
     }
     else {
@@ -1353,7 +1553,7 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
         if (strncmp(arg1, "null", 4) == 0) {
             for (int i=0; i < count; i++) {
                 int temp = vvector->bitvector[i];
-                if (temp >= ret) {
+                if (temp >= ret && temp < INT_MAX) {
                     ret = temp;          
                 }
             }
@@ -1362,7 +1562,7 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
             CatalogEntry* pvector = get(variable_pool, arg1);
             for (int i=0; i < count; i++) {
                 int temp = vvector->bitvector[i];
-                if (temp >= ret && pvector->bitvector[i] == INT_MAX) {
+                if (temp >= ret && temp < INT_MAX && pvector->bitvector[i] == INT_MAX) {
                     ret = temp;          
                 }
             }
@@ -1398,6 +1598,10 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
 
         strcpy(maxvalues->name, handle_second);
         maxvalues->value = ret;
+        maxvalues->has_value = true;
+
+        positionlist->in_vpool = true;
+        maxvalues->in_vpool = true;
 
         put(variable_pool, *positionlist);
         put(variable_pool, *maxvalues);
@@ -1423,19 +1627,70 @@ DbOperator* parse_min(char* query_command, char* handle, message* send_message, 
 
     // only one parameter
     if (arg1[length-1] == ')') {
-        arg1 = trim_parenthesis(arg1);
-        // get value vector
-        CatalogEntry* vvector = get(variable_pool, arg1);
 
         int ret = INT_MAX;
-        int count = vvector->size;
 
-        for (int i=0; i < count; i++) {
-            int temp = vvector->bitvector[i];
-            if (temp <= ret) {
-                ret = temp;          
+        arg1 = trim_parenthesis(arg1);
+        if (!contains_dot(arg1)) {
+            // get value vector
+            CatalogEntry* vvector = get(variable_pool, arg1);
+            
+            int count = vvector->size;
+
+            for (int i=0; i < count; i++) {
+                int temp = vvector->bitvector[i];
+                if (temp <= ret && temp > INT_MIN) {
+                    ret = temp;          
+                }
             }
         }
+        else {
+            char* name = getName(arg1);
+            
+            // retrieve filename from catalog
+            FILE* file1 = fopen("catalogue.txt", "r");
+            CatalogHashtable* ht = populate_catalog(file1);
+            CatalogEntry* pvector = get(ht, name);
+
+            char* catpath = makePath(arg1, _COLUMN);
+
+            while (strcmp((*pvector).filepath, catpath) != 0) {
+                pvector = pvector->next;
+            }
+
+            char* fullpath = (*pvector).filepath;
+            strcat(fullpath, ".txt");
+
+            // open column file
+            FILE* file = fopen(fullpath, "r");
+            if (!file) {
+                perror("Error opening file");
+                return NULL;
+                }
+            char line[1024];
+            //skip first line
+            if (!fgets(line, sizeof(line), file)) {
+                perror("Error reading file");
+                fclose(file);
+                return 0;
+            }
+            //loop through the rest
+            while (fgets(line, sizeof(line), file)) {
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') {
+                    line[len - 1] = '\0';
+                }
+                int lineval = atoi(line);
+                if (lineval > INT_MIN && lineval < INT_MAX) {
+                    if (lineval <= ret) {
+                        ret = lineval;
+                    }
+                }
+            }
+            // close column file
+            fclose(file1);
+        }
+
 
         // Object for first return val
         CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
@@ -1446,6 +1701,9 @@ DbOperator* parse_min(char* query_command, char* handle, message* send_message, 
 
         strcpy(cat->name, handle);
         cat->value = ret;
+        cat->has_value = true;
+        cat->in_vpool = true;
+
         put(variable_pool, *cat);
     }
     else {
@@ -1466,7 +1724,7 @@ DbOperator* parse_min(char* query_command, char* handle, message* send_message, 
         if (strcmp(arg1, "null") == 0) {
             for (int i=0; i < count; i++) {
                 int temp = vvector->bitvector[i];
-                if (temp <= ret) {
+                if (temp <= ret && temp > INT_MIN) {
                     ret = temp;          
                 }
             }
@@ -1475,7 +1733,7 @@ DbOperator* parse_min(char* query_command, char* handle, message* send_message, 
             CatalogEntry* pvector = get(variable_pool, arg1);
             for (int i=0; i < count; i++) {
                 int temp = vvector->bitvector[i];
-                if (temp <= ret && pvector->bitvector[i] == INT_MAX) {
+                if (temp <= ret && temp > INT_MIN && pvector->bitvector[i] == INT_MAX) {
                     ret = temp;          
                 }
             }
@@ -1511,6 +1769,10 @@ DbOperator* parse_min(char* query_command, char* handle, message* send_message, 
 
         strcpy(maxvalues->name, handle_second);
         maxvalues->value = ret;
+        maxvalues->has_value = true;
+
+        positionlist->in_vpool = true;
+        maxvalues->in_vpool = true;
 
         put(variable_pool, *positionlist);
         put(variable_pool, *maxvalues);
@@ -1533,6 +1795,8 @@ DbOperator* parse_add(char* query_command, char* handle, message* send_message, 
     // parse parameters
     char* arg1 = next_token(command_index, &send_message->status);
     char* arg2 = next_token(command_index, &send_message->status);
+    arg1 = trim_parenthesis(arg1);
+    arg2 = trim_parenthesis(arg2);
 
     CatalogEntry* vvector1 = get(variable_pool, arg1);
     CatalogEntry* vvector2 = get(variable_pool, arg2);
@@ -1546,11 +1810,20 @@ DbOperator* parse_add(char* query_command, char* handle, message* send_message, 
     int count = vvector1->size;
 
     for (int i=0; i<count; i++) {
-        retvector->bitvector[i] = (vvector1->bitvector[i]) + (vvector2->bitvector[i]);
+        if ((vvector1->bitvector[i]) != INT_MIN && (vvector2->bitvector[i]) != INT_MIN 
+        && (vvector1->bitvector[i]) != INT_MAX && (vvector2->bitvector[i]) != INT_MAX) {
+            retvector->bitvector[i] = (vvector1->bitvector[i]) + (vvector2->bitvector[i]);
+        }
+        else {
+            retvector->bitvector[i] = INT_MIN;
+        }
     }
 
     strcpy(retvector->name, handle);
     retvector->size = count;
+    retvector->in_vpool = true;
+
+    put(variable_pool, *retvector);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
     return dbo;
@@ -1568,6 +1841,8 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
     // parse parameters
     char* arg1 = next_token(command_index, &send_message->status);
     char* arg2 = next_token(command_index, &send_message->status);
+    arg1 = trim_parenthesis(arg1);
+    arg2 = trim_parenthesis(arg2);
 
     CatalogEntry* vvector1 = get(variable_pool, arg1);
     CatalogEntry* vvector2 = get(variable_pool, arg2);
@@ -1580,13 +1855,21 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
 
     int count = vvector1->size;
 
-
     for (int i=0; i<count; i++) {
-        retvector->bitvector[i] = (vvector1->bitvector[i]) - (vvector2->bitvector[i]);
+        if ((vvector1->bitvector[i]) != INT_MIN && (vvector2->bitvector[i]) != INT_MIN 
+        && (vvector1->bitvector[i]) != INT_MAX && (vvector2->bitvector[i]) != INT_MAX) {
+            retvector->bitvector[i] = (vvector1->bitvector[i]) - (vvector2->bitvector[i]);
+        }
+        else {
+            retvector->bitvector[i] = INT_MIN;
+        }
     }
 
     strcpy(retvector->name, handle);
     retvector->size = count;
+    retvector->in_vpool = true;
+
+    put(variable_pool, *retvector);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
     return dbo;
@@ -1636,6 +1919,8 @@ SelectObject queue_pop(Queue* queue) {
     return query;
 }
 /*
+TODO:
+
 DbOperator* add_select_to_query(char* query_command, char* handle, message* send_message, CatalogEntry* variable_pool, Queue* batch_queue) {
 
 }
