@@ -67,6 +67,124 @@ int connect_client() {
  *      What kind of protocol or structure will you use to interpret results for final display to the user?
  *      
 **/
+
+void sendMessage(message send_message, int socket) {
+    // Send the message_header, which tells server payload size
+    if (send(socket, &(send_message), sizeof(message), 0) == -1) {
+        log_err("Failed to send message header.");
+        exit(1);
+    }
+
+
+    // Send the payload (query) to server
+    if (send(socket, send_message.payload, send_message.length, 0) == -1) {
+        log_err("Failed to send query payload.");
+        exit(1);
+    }
+}
+
+void receiveMessage(int socket) {
+    message recv_message;
+    int len = 0;
+
+    // Always wait for server response (even if it is just an OK message)
+    if ((len = recv(socket, &(recv_message), sizeof(message), 0)) > 0) {
+        if ((recv_message.status == OK_WAIT_FOR_RESPONSE || recv_message.status == OK_DONE) &&
+            (int) recv_message.length > 0) {
+            // Calculate number of bytes in response package
+            int num_bytes = (int) recv_message.length;
+            char payload[num_bytes + 1];
+
+            // Receive the payload and print it out
+            if ((len = recv(socket, payload, num_bytes, 0)) > 0) {
+                payload[num_bytes] = '\0';
+                printf("%s\n", payload);
+            }
+        }
+    }
+    else {
+        if (len < 0) {
+            log_err("Failed to receive message.");
+        }
+        else {
+            log_info("-- Server closed connection\n");
+        }
+        exit(1);
+    }
+}
+
+message handleLoadQuery(char* query, int socket) {
+    // extract message path
+    char* path = query + 5;
+    path = trim_whitespace(path);
+    path = trim_quotes(path);
+    size_t len = strlen(path);
+    if (path[len - 1] != ')') {
+        return;
+    }
+    path[len - 1] = '\0';
+
+    // open file
+    FILE* fp = fopen(path, "r");
+
+    if (fp == NULL) {
+        perror("Failed to open file");
+        return;
+    }
+        
+    char buf[1024];
+    message send_message;
+    send_message.status = 0;
+
+    // read database/table/column
+    if (!fgets(buf, sizeof(buf), fp)) {
+        fclose(fp);
+        return;
+    }
+    char* col_name = malloc((strlen(buf) + 1) * sizeof(char));
+    strcpy(col_name, buf);
+
+    // Assuming the format db1.tbl1.col1,db1.tbl1.col2,... extract db1.tbl1
+    char* token1 = strtok(col_name, ".");
+    if (token1 == NULL) {
+        free(col_name);
+        fclose(fp);
+        log_err("Error parsing table name from file.\n");
+        return;
+    }
+
+    char* token2 = strtok(NULL, ".");
+    if (token2 == NULL) {
+        free(col_name);
+        fclose(fp);
+        log_err("Error parsing column name from file.\n");
+        return;
+    }
+
+    char* table_name = malloc(strlen(token1) + strlen(token2) + 2); // +2 for dot and null terminator
+    sprintf(table_name, "%s.%s", token1, token2);
+    // Now table_name contains 'db1.tbl1'
+
+    // Read all rows from file and send to server
+    while (fgets(buf, sizeof(buf), fp)) {
+        size_t len = strlen(buf);
+        if (buf[len - 1] == '\n') {
+            buf[len - 1] = '\0';
+        }
+        char query_insert[1024]; // Adjust size as needed
+        sprintf(query_insert, "relational_insert(%s,%s)", table_name, buf);
+        send_message.length = strlen(query_insert);
+        send_message.payload = query_insert;
+        sendMessage(send_message, socket); 
+        receiveMessage(socket);
+    }
+
+    free(col_name);
+    fclose(fp);
+}
+
+
+
 int main(void)
 {
     int client_socket = connect_client();
@@ -100,17 +218,24 @@ int main(void)
             log_err("fgets failed.\n");
             break;
         }
-
+   
         // Only process input that is greater than 1 character.
         // Convert to message and send the message and the
         // payload directly to the server.
         send_message.length = strlen(read_buffer);
         if (send_message.length > 1) {
+            // handle load messages differently from the rest
+            if (strncmp(read_buffer, "load", 4) == 0) {
+                handleLoadQuery(read_buffer, client_socket);
+                continue;
+            }
+
             // Send the message_header, which tells server payload size
             if (send(client_socket, &(send_message), sizeof(message), 0) == -1) {
                 log_err("Failed to send message header.");
                 exit(1);
             }
+
 
             // Send the payload (query) to server
             if (send(client_socket, send_message.payload, send_message.length, 0) == -1) {

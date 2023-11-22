@@ -176,14 +176,26 @@ typedef struct GeneralizedColumnHandle {
 /*
  * holds the information necessary to refer to generalized columns (results or columns)
  */
+
+// Structure for shared scan context.
+typedef struct SelectObject{
+    char* filepath; // Reference to the data being scanned.
+    int minval; // Starting index of the scan.
+    int maxval; // Ending index of the scan.
+    int results[100]; // Array to store scan results (e.g., matching indices).
+    int resultCount; // Number of matches found.
+    pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
+} SelectObject;
+
 typedef struct ClientContext {
     GeneralizedColumnHandle* chandle_table;
     int chandles_in_use;
     int chandle_slots;
     // So we can know whether or not we are within a batch query
     bool is_batch;
+    SelectObject* selects[20];
+    // Select object hashtable? Or even just a linked list
 } ClientContext;
-
 
 
 /**
@@ -286,15 +298,8 @@ typedef struct CatalogHashtable {
     CatalogEntry* table[101]; // An array of pointers to entries
 } CatalogHashtable;
 
-// Structure for shared scan context.
-typedef struct SelectObject{
-    char* filepath; // Reference to the data being scanned.
-    int minval; // Starting index of the scan.
-    int maxval; // Ending index of the scan.
-    CatalogEntry* results; // Array to store scan results (e.g., matching indices).
-    int resultCount; // Number of matches found.
-    pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
-} SelectObject;
+
+// QUEUE IS FOR MULTIPLE CORE USE
 
 // A node in the queue.
 typedef struct node {
@@ -309,6 +314,8 @@ typedef struct Queue {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 } Queue;
+
+
 
 /* 
  * Use this command to see if databases that were persisted start up properly. If files

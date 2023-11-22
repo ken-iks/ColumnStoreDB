@@ -31,6 +31,9 @@
 #define MAX_LINE_SIZE 1024
 #define DELIMITER ","
 
+#define MAX_THREADS 4
+#define TASK_QUEUE_SIZE 10
+
 char* makePath(char* name, CreateType t);
 
 /**
@@ -208,7 +211,6 @@ int deallocate(CatalogHashtable* ht) {
 }
 
 
-
 CreateType str_to_type(char * t) {
     if (strcmp(t, "db") == 0) {
         return _DB;
@@ -277,6 +279,7 @@ CatalogHashtable* populate_catalog(FILE* file) {
     struct stat sb;
     if (fstat(fd, &sb) == -1) {
         perror("fstat");
+        deallocate(ht);
         close(fd);
         return NULL;
     }
@@ -288,6 +291,7 @@ CatalogHashtable* populate_catalog(FILE* file) {
         perror("mmap");
         close(fd);
         free(buffer); // Don't forget to free the buffer if mmap fails.
+        deallocate(ht);
         return NULL;
     }
 
@@ -295,6 +299,7 @@ CatalogHashtable* populate_catalog(FILE* file) {
         perror("malloc");
         close(fd);
         free(buffer);
+        deallocate(buffer);
         return NULL;
     }
 
@@ -321,6 +326,8 @@ CatalogHashtable* populate_catalog(FILE* file) {
         }
         // Add entry to hashtable
         put(ht, *ct);
+
+        free(ct);
         
         // Increase count
         count++;
@@ -733,7 +740,7 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
         }
 
         // find entry for this table in catalog
-        FILE* file = fopen("catalogue.txt", "a");
+        FILE* file = fopen("catalogue.txt", "r");
         CatalogHashtable* ht = populate_catalog(file);
 
         CatalogEntry* this_table = get(ht, catname);
@@ -762,6 +769,9 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
             // Check if the entry is a regular file -> need to account for final ')' at some point
             if (entry->d_type == DT_REG) {
                 token = strsep(command_index, ",");
+                if (strchr(token, ')')) {
+                    *strchr(token, ')') = '\0';
+                }
                 add_element_to_file(entry->d_name, path, token);
             }
         }
@@ -842,18 +852,8 @@ DbOperator* parse_load(char* query_command, message* send_message) {
                 if (headerTokens[lineIndex] != NULL && token != NULL) {
                     add_element_to_file2(headerTokens[lineIndex], strdup(token));
                 }
-                //lineTokens[lineIndex] = token;
                 lineIndex++;
             }
-
-            /*for (int i = 0; i < lineIndex; i++) {
-                if (headerTokens[i] != NULL && lineTokens[i] != NULL) {
-                    add_element_to_file2(headerTokens[i], lineTokens[i]);
-                }
-                else {
-                    break;
-                }
-            } */
 
             free(tofree);
         }
@@ -1162,7 +1162,7 @@ int print_column(char* token) {
 
 int print_vector(char* token, CatalogHashtable* variable_pool) {
     CatalogEntry* vvector = get(variable_pool, token);
-    FILE *combinedFile = fopen("combined_data.txt", "w");
+    FILE *combinedFile = fopen("combined_data.txt", "a");
     if (!combinedFile) {
         perror("Error opening combined file");
         return 0;
@@ -1172,18 +1172,28 @@ int print_vector(char* token, CatalogHashtable* variable_pool) {
         char buffer[12];
         snprintf(buffer, sizeof(buffer), "%.2f", vvector->value);
         fputs(buffer, combinedFile);
+        //fputc(',', combinedFile);
     }
-    int size = vvector->size;
-    for (int i=0; i<size; i++) {
-        if (vvector->bitvector[i] != INT_MIN && vvector->bitvector[i] != INT_MAX) {
-            char buffer[12];
-            snprintf(buffer, sizeof(buffer), "%d", vvector->bitvector[i]);
-            /*log_err(buffer);*/
-            fputs(buffer, combinedFile);
-            fputs("\n", combinedFile);
+    else {
+        int size = vvector->size;
+        for (int i=0; i<size; i++) {
+            if (vvector->bitvector[i] != INT_MIN && vvector->bitvector[i] != INT_MAX) {
+                char buffer[12];
+                snprintf(buffer, sizeof(buffer), "%d", vvector->bitvector[i]);
+                /*log_err(buffer);*/
+                fputs(buffer, combinedFile);
+                fputs("\n", combinedFile);
+            }
         }
     }
-    fputc('\n', combinedFile);
+    //fputc('\n', combinedFile);
+
+    long pos = ftell(combinedFile);
+    if (pos > 0) {
+        fseek(combinedFile, -1, SEEK_CUR);  // Move back one character
+        fputc('\n', combinedFile);          // Replace comma with newline
+    }
+
     fclose(combinedFile);
     return 1;
 }
@@ -1202,6 +1212,13 @@ char* parse_print(char* query_command, message* send_message, CatalogHashtable* 
     char** command_index = &query_command;
     char* token = next_token(command_index, &send_message->status);
     int last_char = strlen(token) - 1;
+    // Clear combined data
+    FILE *clearCombined = fopen("combined_data.txt", "w");
+    if (!clearCombined) {
+        perror("Error opening combined file");
+        return NULL;
+    }
+    fclose(clearCombined);
     while (last_char < 0 || token[last_char] != ')') {
         if (contains_dot(token)) {
             print_column(token);
@@ -1211,6 +1228,14 @@ char* parse_print(char* query_command, message* send_message, CatalogHashtable* 
         }
         token = next_token(command_index, &send_message->status);
         last_char = strlen(token) - 1;
+
+        if (token && token[0] != ')') {
+            // Not the last token, add a comma
+            FILE *combinedFile = fopen("combined_data.txt", "a");
+            fputc(',', combinedFile);
+            fclose(combinedFile);
+        }
+
     }
     token = trim_parenthesis(token);
     if (contains_dot(token)) {
@@ -1248,6 +1273,14 @@ char* parse_print(char* query_command, message* send_message, CatalogHashtable* 
 
     // Null-terminate the buffer
     ret_buffer[filelen] = '\0';
+
+    // Iterate through the buffer and remove newlines directly before a comma
+    for (int i = 0; i < filelen; i++) {
+        if (ret_buffer[i] == '\n' && ret_buffer[i + 1] == ',') {
+            // Shift the rest of the string one character to the left
+            memmove(&ret_buffer[i], &ret_buffer[i + 1], filelen - i);
+        }
+    }
 
     // Close the file when done
     fclose(readCombined);
@@ -1918,16 +1951,154 @@ SelectObject queue_pop(Queue* queue) {
     free(old_head);
     return query;
 }
-/*
-TODO:
 
-DbOperator* add_select_to_query(char* query_command, char* handle, message* send_message, CatalogEntry* variable_pool, Queue* batch_queue) {
+// Helper functions for batch processing
 
+int get_select_obj(char* filename, ClientContext* context) {
+    for (int i=0; i<20; i++) {
+        if (strcmp(filename, context->selects[i])) {
+            return i;
+        }
+    }
+    return NULL;
+}
+
+
+DbOperator* add_select_to_queue(char* query_command, char* handle, message* send_message, CatalogEntry* variable_pool, ClientContext* context) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    if (contains_dot(arg1)) {
+        // Dealing with column
+        char* name = getName(arg1);
+        char* catpath = makePath(arg1, _COLUMN);
+        // Now catpath is the filepath we are looking to work with
+
+        char* low = next_token(command_index, &send_message->status);
+        char* high = next_token(command_index, &send_message->status);
+        high = trim_parenthesis(high);
+        int ilow;
+        int ihigh;
+        if (strcmp(low, "null") == 0) {
+            ilow = INT_MIN;
+        } else {
+            ilow = atoi(low);
+        }
+        if (strcmp(high, "null") == 0) {
+            ihigh = INT_MAX;
+        } else {
+            ihigh = atoi(high);
+        }
+
+        int s = get_select_obj(catpath, context);
+        if (s) {
+            // this path is already in our batch. Check if we dont need to re run.
+            SelectObject* target = context->selects[s];
+  
+            // now ihigh is the high and ilow is the low. We compare these to our target object
+            if (ilow >= target->minval && ihigh <= target->maxval) {
+                // TODO: nothing really. But keep track of the command so that the select can execute.
+                return;
+            }
+            else if (ilow >= target->minval) {
+                // want to now search for values in catalogue between target->maxval and ihigh 
+                // Then we update the cache object for this filepath with the new values and new range
+                ilow = target->maxval;
+            }
+            else if (ihigh <= target->maxval) {
+                // want to now search for values in catalogue between ilow and target->minval 
+                // Then we update the cache object for this filepath with the new values and new range
+                ihigh = target->minval;
+            }
+            else {
+                // have to search in the regular way and then update 
+            }
+
+        }
+        else {
+            // retrieve filename from catalog
+            FILE* file1 = fopen("catalogue.txt", "r");
+            CatalogHashtable* ht = populate_catalog(file1);
+            CatalogEntry* this_table = get(ht, name);
+
+            // Check for collisions
+            while (strcmp((*this_table).filepath, catpath) != 0) {
+                this_table = this_table->next;
+            }
+
+            if (!this_table) {
+                //perror("Error retriving column");
+                fprintf(stderr, "Error retriving column: %s", name);
+                return NULL;
+            }
+            char* fullpath = (*this_table).filepath;
+            strcat(fullpath, ".txt");
+            // open column file
+            FILE* file = fopen(fullpath, "r");
+            if (!file) {
+                perror("Error opening file");
+                return NULL;
+                }
+
+            char line[1024];
+                // Skip the first line
+
+                if (!fgets(line, sizeof(line), file)) {
+                    perror("Error reading file");
+                    fclose(file);
+                    return NULL;
+                }
+
+                int count = 0;
+
+                SelectObject* retselect = (SelectObject*) malloc(sizeof(SelectObject));
+
+                // Now loop through each subsequent line
+                while (fgets(line, sizeof(line), file)) {
+                    // Remove the newline character, if present
+                    size_t len = strlen(line);
+                    if (len > 0 && line[len - 1] == '\n') {
+                        line[len - 1] = '\0';
+                    }
+                    int lineval = atoi(line);
+
+                    if (lineval < ihigh && lineval >= ilow) {
+                        retselect->results[count] = lineval;
+                        count++;
+                    }
+                }
+                // count is now num results. So if I want to update I can just update from numresults
+                retselect->maxval = ihigh;
+                retselect->minval = ilow;
+                retselect->resultCount = count;
+                strcpy(retselect->filepath, catpath);
+                // mutex?
+                
+                fclose(file);
+                
+                // ADD THE RETSELECT OBJECT TO THE CLIENT CONTEXT
+
+                
+        }
+    }
+    else {
+        // Dealing with pos vector
+        CatalogEntry* pvector = get(variable_pool, arg1);
+        char* vvector_name = next_token(command_index, &send_message->status);
+        // Now vvector name is the filepath we are looking to work with
+    }
 }
 
 DbOperator* parse_batch_execute(char* query_command, message* send_message, ClientContext* context) {
+    //TODO
+    return NULL;
 }
-*/
+
 
 
 
@@ -1985,13 +2156,13 @@ Queue* batch_queue) {
     } else if (strncmp(query_command, "relational_insert", 17) == 0) {
         query_command += 17;
         dbo = parse_insert(query_command, send_message);
-    } else if (strncmp(query_command, "load", 4) == 0) {
+    }/* else if (strncmp(query_command, "load", 4) == 0) {
         query_command += 4;
         dbo = parse_load(query_command, send_message);
-    } else if (handle != NULL && (strncmp(query_command, "select", 6) == 0)) {
+    } */else if (handle != NULL && (strncmp(query_command, "select", 6) == 0)) {
         query_command += 6;
         if (context->is_batch) {
-            //dbo = add_select_to_queue(query_command, handle, send_message, variable_pool, batch_queue); //TODO:
+            dbo = add_select_to_queue(query_command, handle, send_message, variable_pool, batch_queue); //TODO:
         }
         else {
             dbo = parse_select(query_command, handle, send_message, variable_pool);
@@ -2020,13 +2191,13 @@ Queue* batch_queue) {
     } else if (handle != NULL && strncmp(query_command, "sub", 3) == 0) {
         query_command += 3;
         dbo = parse_sub(query_command, handle, send_message, variable_pool); 
-    }  /* else if (strncmp(query_command, "batch_queries", 13) == 0) {
+    } else if (strncmp(query_command, "batch_queries", 13) == 0) {
         query_command += 13;
         context->is_batch = true;
     } else if (strncmp(query_command, "batch_execute", 13) == 0) {
         query_command += 13;
         dbo = parse_batch_execute(query_command, send_message, context);
-    } */
-  
+    }
+    free(dbo);
     return "";
 }

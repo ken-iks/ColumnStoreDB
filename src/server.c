@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 
 #include "common.h"
 #include "parse.h"
@@ -39,37 +40,6 @@
  *      How will you interpret different queries?
  *      How will you ensure different queries invoke different execution paths in your code?
  **/
-char* execute_DbOperator(DbOperator* query) {
-    // there is a small memory leak here (when combined with other parts of your database.)
-    // as practice with something like valgrind and to develop intuition on memory leaks, find and fix the memory leak. 
-    if(!query)
-    {
-        return "165";
-    }
-    if(query && query->type == CREATE){
-        if(query->operator_fields.create_operator.create_type == _DB){
-            if (create_db(query->operator_fields.create_operator.name).code == OK) {
-                return "165";
-            } else {
-                return "Failed";
-            }
-        }
-        else if(query->operator_fields.create_operator.create_type == _TABLE){
-            Status create_status;
-            create_table(query->operator_fields.create_operator.db, 
-                query->operator_fields.create_operator.name, 
-                query->operator_fields.create_operator.col_count, 
-                &create_status);
-            if (create_status.code != OK) {
-                cs165_log(stdout, "adding a table failed.");
-                return "Failed";
-            }
-            return "165";
-        }
-    }
-    free(query);
-    return "165";
-}
 
 /**
  * handle_client(client_socket)
@@ -226,6 +196,8 @@ int setup_server() {
 //      What aspects of siloes or isolation are maintained in your design? (Think `what` is shared between `whom`?)
 int main(void)
 {
+    signal(SIGPIPE, SIG_IGN);
+
     int server_socket = setup_server();
     if (server_socket < 0) {
         exit(1);
@@ -241,8 +213,8 @@ int main(void)
         log_err("L%d: Failed to accept a new connection.\n", __LINE__);
         exit(1);
     }
-
+  
     handle_client(client_socket);
-
+  
     return 0;
 }
