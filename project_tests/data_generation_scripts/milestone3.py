@@ -89,7 +89,7 @@ def createTest21():
     output_file.write('--\n')
     output_file.write('-- Table tbl4 has a clustered index with col3 being the leading column.\n')
     output_file.write('-- The clustered index has the form of a sorted column.\n')
-    output_file.write('-- The table also has a secondary btree index.\n')
+    output_file.write('-- The table also has an unclustered btree index on col2.\n')
     output_file.write('--\n')
     output_file.write('-- Loads data from: data4_btree.csv\n')
     output_file.write('--\n')
@@ -118,6 +118,7 @@ def createTests22And23(dataTable, dataSize):
     output_file23, exp_output_file23 = data_gen_utils.openFileHandles(23, TEST_DIR=TEST_BASE_DIR)
     output_file22.write('--\n')
     output_file22.write('-- Query in SQL:\n')
+
     # selectivity = 
     offset = np.max([1, int(dataSize/5000)])
     offset2 = np.max([2, int(dataSize/2500)])
@@ -382,6 +383,85 @@ def createTest32(dataTable, dataSize):
             exp_output_file.write(str(sum_result) + '\n')
     data_gen_utils.closeFileHandles(output_file, exp_output_file)
 
+def createTest33To38(dataTable, dataSize):
+    table_names=['tbl4_ctrl','tbl4','tbl4_clustered_btree']
+    selectivites=['0.1%','1%']
+    #selectivity 0.1%
+    offset1 = np.max([1, int(dataSize/5000)])
+    #selectivity 1%
+    offset2 = np.max([2, int(dataSize/500)])
+    offsets=[offset1, offset2]
+    test_start=33
+    for offset, selectivity in zip(offsets, selectivites):
+        for table_name in table_names:
+            output_file, exp_output_file = data_gen_utils.openFileHandles(test_start, TEST_DIR=TEST_BASE_DIR)
+
+            output_file.write('--\n')
+            output_file.write('-- selectivity={}\n'.format(selectivity))
+            output_file.write('-- Query in SQL:\n')
+            output_file.write('-- SELECT avg(col1) FROM {} WHERE col3 >= _ and col3 < _;\n'.format(table_name))
+            output_file.write('--\n')
+
+            for i in range(20):
+
+                val = np.random.randint(0, int((dataSize/5) - offset))
+
+                output_file.write('s{}=select(db1.{}.col3,{},{})\n'.format(i, table_name,val, val + offset))
+                output_file.write('f{}=fetch(db1.{}.col1,s{})\n'.format(i, table_name, i))
+                output_file.write('a{}=avg(f{})\n'.format(i,i))
+                output_file.write('print(a{})\n'.format(i))
+
+                dfSelectMask = (dataTable['col3'] >= val) & (dataTable['col3'] < (val + offset))
+                values = dataTable[dfSelectMask]['col1']
+                mean_result = np.round(values.mean(), PLACES_TO_ROUND)
+                if (math.isnan(mean_result)):
+                    exp_output_file.write('0.00\n')
+                else:
+                    exp_output_file.write('{:0.2f}\n'.format(mean_result))
+
+
+            data_gen_utils.closeFileHandles(output_file, exp_output_file)
+            test_start += 1
+
+def createTest39To44(dataTable, dataSize):
+    table_names=['tbl4_ctrl','tbl4','tbl4_clustered_btree']
+    selectivites=['0.1%','1%']
+    #selectivity 0.1%
+    offset1 = np.max([1, int(dataSize/5000)])
+    #selectivity 1%
+    offset2 = np.max([2, int(dataSize/500)])
+    offsets=[offset1, offset2]
+    test_start=39
+    for offset, selectivity in zip(offsets, selectivites):
+        for table_name in table_names:
+            output_file, exp_output_file = data_gen_utils.openFileHandles(test_start, TEST_DIR=TEST_BASE_DIR)
+
+            output_file.write('--\n')
+            output_file.write('-- selectivity={}\n'.format(selectivity))
+            output_file.write('-- Query in SQL:\n')
+            output_file.write('-- SELECT avg(col3) FROM {} WHERE col2 >= _ and col2 < _;\n'.format(table_name))
+            output_file.write('--\n')
+
+            for i in range(20):
+
+                val = np.random.randint(0, int((dataSize/5) - offset))
+
+                output_file.write('s{}=select(db1.{}.col2,{},{})\n'.format(i, table_name,val, val + offset))
+                output_file.write('f{}=fetch(db1.{}.col3,s{})\n'.format(i, table_name, i))
+                output_file.write('a{}=avg(f{})\n'.format(i,i))
+                output_file.write('print(a{})\n'.format(i))
+
+                dfSelectMask = (dataTable['col2'] >= val) & (dataTable['col2'] < (val + offset))
+                values = dataTable[dfSelectMask]['col3']
+                mean_result = np.round(values.mean(), PLACES_TO_ROUND)
+                if (math.isnan(mean_result)):
+                    exp_output_file.write('0.00\n')
+                else:
+                    exp_output_file.write('{:0.2f}\n'.format(mean_result))
+
+            data_gen_utils.closeFileHandles(output_file, exp_output_file)
+            test_start += 1
+
 
 def generateMilestoneThreeFiles(dataSize, randomSeed=47):
     np.random.seed(randomSeed)
@@ -396,6 +476,8 @@ def generateMilestoneThreeFiles(dataSize, randomSeed=47):
     createTest30()
     createTest31(dataTable, dataSize)
     createTest32(dataTable, dataSize)
+    createTest33To38(dataTable, dataSize)
+    createTest39To44(dataTable, dataSize)
 
 def main(argv):
     global TEST_BASE_DIR
