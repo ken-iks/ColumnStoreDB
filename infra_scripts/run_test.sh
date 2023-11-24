@@ -22,7 +22,7 @@ start=`date +%s%N`
 end=`date +%s%N`
 echo Execution time was `expr $end - $start` nanoseconds.
 
-if [[ $test_id == 18 ]] || [[ $test_id == 19 ]]
+if [[ $test_id == 18 ]] || [[ $test_id == 19 ]] 
 then
     echo Test $test_id is a performance test. Checking its speedup...
     prev_time=`cat tmp.prev_time`
@@ -36,7 +36,21 @@ then
     echo Now, checking whether it also outputs correct results...
 fi
 
-if [[ $test_id == 16 ]] || [[ $test_id == 18 ]]
+if [[ $test_id == 34 ]] || [[ $test_id == 35 ]] || [[ $test_id == 37 ]] || [[ $test_id == 38 ]] || [[ $test_id == 40 ]] || [[ $test_id == 41 ]] || [[ $test_id == 43 ]] || [[ $test_id == 44 ]]   
+then
+    echo Test $test_id is a performance test. Checking its speedup...
+    prev_time=`cat tmp.prev_time`
+    curr_time=`expr $end - $start`
+    speedup=`printf "%.4f\n" $((10**4 * curr_time/prev_time))e-4`
+    ths=1.1
+    echo Speedup is $speedup. Checking whether it satisfies the performance requirements for threshold of $ths\...
+    awk -v n1="$speedup" -v n2="$ths" 'BEGIN { printf "" (n1>=n2?  "Yes, it does. Success! [\033[42mok\033[0m]\n"  : "No, it does not. Failure! [\033[31mfail\033[0m]\n")}'
+    rm tmp.prev_time
+
+    echo Now, checking whether it also outputs correct results...
+fi
+
+if [[ $test_id == 16 ]] || [[ $test_id == 18 ]] || [[ $test_id == 33 ]] [[ $test_id == 34 ]] || [[ $test_id == 36 ]] || [[ $test_id == 37 ]] || [[ $test_id == 39 ]] || [[ $test_id == 40 ]] || [[ $test_id == 42 ]] || [[ $test_id == 43 ]]
 then
     prev_time=`expr $end - $start`
     echo $prev_time > tmp.prev_time
