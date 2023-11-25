@@ -19,7 +19,7 @@ UPTOMILE="${1:-5}"
 WAIT_SECONDS_TO_RECOVER_DATA="${2:-5}"
 
 MAX_AVAILABLE_MS=5
-MAX_TEST=45
+MAX_TEST=57
 TEST_IDS=`seq -w 1 ${MAX_TEST}`
 
 if [ "$UPTOMILE" -eq "1" ] ;
@@ -30,13 +30,13 @@ then
     MAX_TEST=19
 elif [ "$UPTOMILE" -eq "3" ] ;
 then
-    MAX_TEST=32
+    MAX_TEST=44
 elif [ "$UPTOMILE" -eq "4" ] ;
 then
-    MAX_TEST=39
+    MAX_TEST=51
 elif [ "$UPTOMILE" -eq "5" ] ;
 then
-    MAX_TEST=45
+    MAX_TEST=57
 fi
 
 function killserver () {
@@ -61,7 +61,7 @@ do
             # start the server before the first case we test.
             ./server > last_server.out &
             FIRST_SERVER_START=1
-        elif [ ${TEST_ID} -eq 2 ] || [ ${TEST_ID} -eq 5 ] || [ ${TEST_ID} -eq 11 ] || [ ${TEST_ID} -eq 21 ] || [ ${TEST_ID} -eq 22 ] || [ ${TEST_ID} -eq 31 ] || [ ${TEST_ID} -eq 34 ] || [ ${TEST_ID} -eq 43 ]
+        elif [ ${TEST_ID} -eq 2 ] || [ ${TEST_ID} -eq 5 ] || [ ${TEST_ID} -eq 11 ] || [ ${TEST_ID} -eq 21 ] || [ ${TEST_ID} -eq 22 ] || [ ${TEST_ID} -eq 31 ] || [ ${TEST_ID} -eq 46 ] || [ ${TEST_ID} -eq 55 ]
         then
             # We restart the server after test 1,4,10,20,21,30,33 (before 2,3,11,12,19,20,31,33), as expected.
         
