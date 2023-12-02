@@ -114,7 +114,23 @@ then
     echo Now, checking whether it also outputs correct results...
 fi
 
-if [[ $test_id == 16 ]] || [[ $test_id == 18 ]] || [[ $test_id == 33 ]] || [[ $test_id == 34 ]] || [[ $test_id == 36 ]] || [[ $test_id == 37 ]] || [[ $test_id == 39 ]] || [[ $test_id == 40 ]] || [[ $test_id == 42 ]] || [[ $test_id == 43 ]]
+if [[ $test_id == 55 ]] || [[ $test_id == 59 ]]  
+then
+    # 55 - 10% selectivity. Nested-loop (54) vs naive-hash (55)
+    # 59 - 80% selectivity. Naive-hash (58) vs grace-hash (59)
+    echo Test $test_id is a performance test. Checking its speedup...
+    prev_time=`cat tmp.prev_time`
+    curr_time=`expr $end - $start`
+    speedup=`printf "%.4f\n" $((10**4 * prev_time/curr_time))e-4`
+    ths=1.1
+    echo Speedup is $speedup. Checking whether it satisfies the performance requirements for threshold of $ths\...
+    awk -v n1="$speedup" -v n2="$ths" 'BEGIN { printf "" (n1>=n2?  "Yes, it does. Success! [\033[42mok\033[0m]\n"  : "No, it does not. Failure! [\033[31mfail\033[0m]\n")}'
+    rm tmp.prev_time
+
+    echo Now, checking whether it also outputs correct results...
+fi
+
+if [[ $test_id == 16 ]] || [[ $test_id == 18 ]] || [[ $test_id == 33 ]] || [[ $test_id == 34 ]] || [[ $test_id == 36 ]] || [[ $test_id == 37 ]] || [[ $test_id == 39 ]] || [[ $test_id == 40 ]] || [[ $test_id == 42 ]] || [[ $test_id == 43 ]] || [[ $test_id == 54 ]] || [[ $test_id == 58 ]]
 then
     prev_time=`expr $end - $start`
     echo $prev_time > tmp.prev_time

@@ -19,7 +19,7 @@ DOCKER_TEST_BASE_DIR = "/cs165/staff_test"
 
 #
 # Example usage: 
-#   python milestone4.py 10000 10000 10000 42 1.0 50 ~/repo/cs165-docker-test-runner/test_data /cs165/staff_test
+#   python milestone4.py 10000 10000 10000 10000 42 1.0 50 ~/repo/cs165-docker-test-runner/test_data /cs165/staff_test
 #
 
 
@@ -53,14 +53,18 @@ class ZipfianDistribution:
         return vectorizedSampleFunc(array)
 
 
-def generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianParam, numDistinctElements):
+def generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, dataSizeSelect, zipfianParam, numDistinctElements):
     outputFile1 = TEST_BASE_DIR + '/' + 'data5_fact.csv'
     outputFile2 = TEST_BASE_DIR + '/' + 'data5_dimension1.csv'
     outputFile3 = TEST_BASE_DIR + '/' + 'data5_dimension2.csv'
+    outputFile4 = TEST_BASE_DIR + '/' + 'data5_selectivity1.csv'
+    outputFile5 = TEST_BASE_DIR + '/' + 'data5_selectivity2.csv'
 
     header_line_fact = data_gen_utils.generateHeaderLine('db1', 'tbl5_fact', 4)
     header_line_dim1 = data_gen_utils.generateHeaderLine('db1', 'tbl5_dim1', 3)
     header_line_dim2 = data_gen_utils.generateHeaderLine('db1', 'tbl5_dim2', 2)
+    header_line_sel1 = data_gen_utils.generateHeaderLine('db1', 'tbl5_sel1', 2)
+    header_line_sel2 = data_gen_utils.generateHeaderLine('db1', 'tbl5_sel2', 2)
     outputFactTable = pd.DataFrame(np.random.randint(0, dataSizeFact/5, size=(dataSizeFact, 4)), columns =['col1', 'col2', 'col3', 'col4'])
     zipfDist = ZipfianDistribution(zipfianParam, numDistinctElements)
     # See Zipf's distribution (wikipedia) for a description of this distribution. 
@@ -76,11 +80,17 @@ def generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianPara
 
     outputDimTable2 = pd.DataFrame(np.random.randint(0, dataSizeDim2/5, size=(dataSizeDim2, 2)), columns =['col1', 'col2'])
     outputDimTable2['col1'] = np.arange(1,dataSizeDim2+1, 1)
+
+    # join on different selectivities
+    outputSelectTable1 = pd.DataFrame(np.random.randint(0, dataSizeSelect/5, size=(dataSizeSelect, 2)), columns=['col1', 'col2']) 
+    outputSelectTable2 = pd.DataFrame(np.random.randint(0, dataSizeSelect/5, size=(dataSizeSelect, 2)), columns=['col1', 'col2']) 
     
     outputFactTable.to_csv(outputFile1, sep=',', index=False, header=header_line_fact, lineterminator='\n')
     outputDimTable1.to_csv(outputFile2, sep=',', index=False, header=header_line_dim1, lineterminator='\n')
     outputDimTable2.to_csv(outputFile3, sep=',', index=False, header=header_line_dim2, lineterminator='\n')
-    return outputFactTable, outputDimTable1, outputDimTable2
+    outputSelectTable1.to_csv(outputFile4, sep=',', index=False, header=header_line_sel1, lineterminator='\n')
+    outputSelectTable2.to_csv(outputFile5, sep=',', index=False, header=header_line_sel2, lineterminator='\n')
+    return outputFactTable, outputDimTable1, outputDimTable2, outputSelectTable1, outputSelectTable2
 
 def createTest45():
     # prelude
@@ -104,6 +114,17 @@ def createTest45():
     output_file.write('create(col,"col1",db1.tbl5_dim2)\n')
     output_file.write('create(col,"col2",db1.tbl5_dim2)\n')
     output_file.write('load("'+DOCKER_TEST_BASE_DIR+'/data5_dimension2.csv")\n')
+    output_file.write('--\n')
+    output_file.write('create(tbl,"tbl5_sel1",db1,2)\n')
+    output_file.write('create(col,"col1",db1.tbl5_sel1)\n')
+    output_file.write('create(col,"col2",db1.tbl5_sel1)\n')
+    output_file.write('load("'+DOCKER_TEST_BASE_DIR+'/data5_selectivity1.csv")\n')
+    output_file.write('--\n')
+    output_file.write('create(tbl,"tbl5_sel2",db1,2)\n')
+    output_file.write('create(col,"col1",db1.tbl5_sel2)\n')
+    output_file.write('create(col,"col2",db1.tbl5_sel2)\n')
+    output_file.write('load("'+DOCKER_TEST_BASE_DIR+'/data5_selectivity2.csv")\n')
+    output_file.write('--\n')
     output_file.write('-- Testing that the data and their indexes are durable on disk.\n')
     output_file.write('shutdown\n')
     # no expected results
@@ -324,9 +345,163 @@ def createTest51(factTable, dimTable1, dataSizeFact, dataSizeDim1, selectivityFa
     else:
         exp_output_file.write('{:0.2f}\n'.format(col1ValuesMean))
     
-def generateMilestoneFourFiles(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianParam, numDistinctElements, randomSeed=47):
+def _perf_test_helper(output_file, dataSizeSelect, selectivity_1, selectivity_2, join_type: str):
+
+    # dataSizeSelect / 5 == range of values.
+    upper_bound_1 = int(selectivity_1 * (dataSizeSelect / 5))
+    upper_bound_2 = int(selectivity_2 * (dataSizeSelect / 5))
+
+    output_file.write(f'-- join performance test - {join_type} with selectivities {selectivity_1} and {selectivity_2}.\n')
+    output_file.write('-- Select + Join + aggregation\n')
+    output_file.write('-- Query in SQL:\n')
+    output_file.write('-- SELECT sum(tbl5_sel1.col1), avg(tbl5_sel2.col2) FROM tbl5_sel1, tbl5_sel2 WHERE tbl5_sel1.col1=tbl5_sel2.col1 AND tbl5_sel1.col1 < {} AND tbl5_sel2.col2<{};\n'.format(upper_bound_1, upper_bound_2))
+    output_file.write('--\n')
+    output_file.write('--\n')
+
+    output_file.write('p1=select(db1.tbl5_sel1.col1,null, {})\n'.format(upper_bound_1))
+    output_file.write('p2=select(db1.tbl5_sel2.col2,null, {})\n'.format(upper_bound_2))
+    output_file.write('f1=fetch(db1.tbl5_sel1.col1,p1)\n')
+    output_file.write('f2=fetch(db1.tbl5_sel2.col1,p2)\n')
+
+    output_file.write(f't1,t2=join(f1,p1,f2,p2,{join_type})\n')
+
+def create_join_correctness_test(select_table_1, 
+                                 select_table_2, 
+                                 data_size, 
+                                 selectivity_1, 
+                                 selectivity_2, 
+                                 join_type_1: str, 
+                                 join_type_2: str,
+                                 test_num):
+    """
+    This test checks correctness.
+    """
+
+    # First join 
+    output_file_1, exp_output_file_1 = data_gen_utils.openFileHandles(test_num, TEST_DIR=TEST_BASE_DIR)
+    _perf_test_helper(output_file_1, data_size, selectivity_1, selectivity_2, join_type_1)
+    output_file_1.write('col1joined=fetch(db1.tbl5_sel1.col1,t1)\n')
+    output_file_1.write('col2joined=fetch(db1.tbl5_sel2.col2,t2)\n')
+    output_file_1.write('a1=sum(col1joined)\n')
+    output_file_1.write('a2=avg(col2joined)\n')
+    output_file_1.write('print(a1,a2)\n')
+
+    # Second join
+    output_file_2, exp_output_file_2 = data_gen_utils.openFileHandles(test_num + 1, TEST_DIR=TEST_BASE_DIR)
+    _perf_test_helper(output_file_2, data_size, selectivity_1, selectivity_2, join_type_2)
+    output_file_2.write('col1joined=fetch(db1.tbl5_sel1.col1,t1)\n')
+    output_file_2.write('col2joined=fetch(db1.tbl5_sel2.col2,t2)\n')
+    output_file_2.write('a1=sum(col1joined)\n')
+    output_file_2.write('a2=avg(col2joined)\n')
+    output_file_2.write('print(a1,a2)\n')
+
+    # generate expected results
+    upper_bound_1 = int(selectivity_1 * (data_size / 5))
+    upper_bound_2 = int(selectivity_2 * (data_size / 5))
+
+    pre_join_sel_1 = select_table_1[select_table_1['col1'] < upper_bound_1]
+    pre_join_sel_2 = select_table_2[select_table_2['col2'] < upper_bound_2]
+
+    joined_table = pre_join_sel_1.merge(pre_join_sel_2, left_on = 'col1', right_on = 'col1', suffixes=('','_right'))
+    col_1_values_sum = joined_table['col1'].sum()
+    col_2_values_mean = joined_table['col2_right'].mean()
+
+    if (math.isnan(col_1_values_sum)):
+        exp_output_file_1.write('0,')
+        exp_output_file_2.write('0,')
+    else:
+        exp_output_file_1.write('{},'.format(col_1_values_sum))
+        exp_output_file_2.write('{},'.format(col_1_values_sum))
+    if (math.isnan(col_2_values_mean)):
+        exp_output_file_1.write('0.00\n')
+        exp_output_file_2.write('0.00\n')
+    else:
+        exp_output_file_1.write('{:0.2f}\n'.format(col_2_values_mean))
+        exp_output_file_2.write('{:0.2f}\n'.format(col_2_values_mean))
+
+    data_gen_utils.closeFileHandles(output_file_1, exp_output_file_1)
+    data_gen_utils.closeFileHandles(output_file_2, exp_output_file_2)
+
+def create_join_perf_test(data_size, 
+                          selectivity_1, 
+                          selectivity_2, 
+                          join_type_1: str,                 
+                          join_type_2: str,
+                          test_num):
+    """
+    Same as the previous test, but only checks for performance (not correctness).
+    """
+    # First join 
+    output_file_1, exp_output_file_1 = data_gen_utils.openFileHandles(test_num, TEST_DIR=TEST_BASE_DIR)
+    _perf_test_helper(output_file_1, data_size, selectivity_1, selectivity_2, join_type_1)
+    data_gen_utils.closeFileHandles(output_file_1, exp_output_file_1)
+    
+    # Second join
+    output_file_2, exp_output_file_2 = data_gen_utils.openFileHandles(test_num + 1, TEST_DIR=TEST_BASE_DIR)
+    _perf_test_helper(output_file_2, data_size, selectivity_1, selectivity_2, join_type_2)
+    data_gen_utils.closeFileHandles(output_file_2, exp_output_file_2)
+
+def createTest52_55(select_table_1, select_table_2, data_size):
+    """
+    Compare nested-loop with naive-hash for lower selectivities.
+    Expect naive-hash to be faster.
+    Creates a total of 4 tests.
+    """
+    test_num = 52
+    join_type_1, join_type_2 = "nested-loop", "naive-hash"
+    selectivity_1 = selectivity_2 = 0.1
+    create_join_correctness_test(
+        select_table_1,
+        select_table_2,
+        data_size,
+        selectivity_1,
+        selectivity_2,
+        join_type_1,
+        join_type_2,
+        test_num
+    )
+
+    create_join_perf_test(
+        data_size,
+        selectivity_1,
+        selectivity_2,
+        join_type_1,
+        join_type_2,
+        test_num + 2
+    )
+
+def createTest56_59(select_table_1, select_table_2, data_size):
+    """
+    Compare naive-hash with grace-hash for higher selectivities.
+    Expect grace-hash to be faster.
+    Creates a total of 4 tests.
+    """
+    test_num = 56
+    join_type_1, join_type_2 = "naive-hash", "grace-hash"
+    selectivity_1 = selectivity_2 = 0.8
+    create_join_correctness_test(
+        select_table_1,
+        select_table_2,
+        data_size,
+        selectivity_1,
+        selectivity_2,
+        join_type_1,
+        join_type_2,
+        test_num
+    )
+
+    create_join_perf_test(
+        data_size,
+        selectivity_1,
+        selectivity_2,
+        join_type_1,
+        join_type_2,
+        test_num + 2
+    )
+
+def generateMilestoneFourFiles(dataSizeFact, dataSizeDim1, dataSizeDim2, dataSizeSelect, zipfianParam, numDistinctElements, randomSeed=47):
     np.random.seed(randomSeed)
-    factTable, dimTable1, dimTable2 = generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianParam, numDistinctElements)  
+    factTable, dimTable1, dimTable2, selectTable1, selectTable2 = generateDataMilestone4(dataSizeFact, dataSizeDim1, dataSizeDim2, dataSizeSelect, zipfianParam, numDistinctElements)  
     createTest45()
     # test many to 1 joins
     createTest46(factTable, dimTable2, dataSizeFact, dataSizeDim2, 0.15, 0.15)
@@ -338,6 +513,9 @@ def generateMilestoneFourFiles(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfian
     createTest50(factTable, dimTable2, dataSizeFact, dataSizeDim2, 0.8, 0.8)
     createTest51(factTable, dimTable1, dataSizeFact, dataSizeDim1, 0.8, 0.8)
 
+    assert(len(selectTable1) == len(selectTable2))
+    createTest52_55(selectTable1, selectTable2, len(selectTable1))
+    createTest56_59(selectTable1, selectTable2, len(selectTable1))
 
 def main(argv):
     global TEST_BASE_DIR
@@ -346,21 +524,22 @@ def main(argv):
     dataSizeFact = int(argv[0])
     dataSizeDim1 = int(argv[1])
     dataSizeDim2 = int(argv[2])
-    if len(argv) > 6:
-        randomSeed = int(argv[3])
-        zipfianParam = np.double(argv[4])
-        numDistinctElements = int(argv[5])
-        TEST_BASE_DIR = argv[6]
+    dataSizeSelect = int(argv[3])
+    if len(argv) > 7:
+        randomSeed = int(argv[4])
+        zipfianParam = np.double(argv[5])
+        numDistinctElements = int(argv[6])
+        TEST_BASE_DIR = argv[7]
 		
-        if len(argv) > 7:
-            DOCKER_TEST_BASE_DIR = argv[7]
+        if len(argv) > 8:
+            DOCKER_TEST_BASE_DIR = argv[8]
 
-    elif len(argv) > 5:
-        randomSeed = argv[3]
-        zipfianParam = np.double(argv[4])
-        numDistinctElements = int(argv[5])
-    elif len(argv) > 3:
-        randomSeed = int(argv[3])
+    elif len(argv) > 6:
+        randomSeed = argv[4]
+        zipfianParam = np.double(argv[5])
+        numDistinctElements = int(argv[6])
+    elif len(argv) > 4:
+        randomSeed = int(argv[4])
         zipfianParam = 1.0
         numDistinctElements = 50
     else:
@@ -368,7 +547,7 @@ def main(argv):
         zipfianParam = 1.0
         numDistinctElements = 50
 
-    generateMilestoneFourFiles(dataSizeFact, dataSizeDim1, dataSizeDim2, zipfianParam, numDistinctElements, randomSeed=randomSeed)
+    generateMilestoneFourFiles(dataSizeFact, dataSizeDim1, dataSizeDim2, dataSizeSelect, zipfianParam, numDistinctElements, randomSeed=randomSeed)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
