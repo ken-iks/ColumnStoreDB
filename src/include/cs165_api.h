@@ -179,22 +179,19 @@ typedef struct GeneralizedColumnHandle {
 
 // Structure for shared scan context.
 typedef struct SelectObject{
-    char* filepath; // Reference to the data being scanned.
+    char handle[MAX_SIZE_NAME];
     int minval; // Starting index of the scan.
     int maxval; // Ending index of the scan.
-    int results[100]; // Array to store scan results (e.g., matching indices).
-    int resultCount; // Number of matches found.
+    int results[1001]; // to store results
     pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
 } SelectObject;
 
 typedef struct ClientContext {
-    GeneralizedColumnHandle* chandle_table;
-    int chandles_in_use;
-    int chandle_slots;
     // So we can know whether or not we are within a batch query
     bool is_batch;
-    SelectObject* selects[20];
-    // Select object hashtable? Or even just a linked list
+    char batch_identifier[MAX_SIZE_NAME];
+    SelectObject* selects[100];
+    int num_selects;
 } ClientContext;
 
 

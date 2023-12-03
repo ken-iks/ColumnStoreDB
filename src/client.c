@@ -142,6 +142,11 @@ message handleLoadQuery(char* query, int socket) {
         return;
     }
     char* col_name = malloc((strlen(buf) + 1) * sizeof(char));
+    if (!col_name) {
+        // handle allocation error
+        fclose(fp);
+        return;
+    }
     strcpy(col_name, buf);
 
     // Assuming the format db1.tbl1.col1,db1.tbl1.col2,... extract db1.tbl1
@@ -162,6 +167,12 @@ message handleLoadQuery(char* query, int socket) {
     }
 
     char* table_name = malloc(strlen(token1) + strlen(token2) + 2); // +2 for dot and null terminator
+    if (!table_name) {
+        // handle allocation error
+        free(col_name);
+        fclose(fp);
+        return;
+    }
     sprintf(table_name, "%s.%s", token1, token2);
     // Now table_name contains 'db1.tbl1'
 
@@ -180,6 +191,7 @@ message handleLoadQuery(char* query, int socket) {
     }
 
     free(col_name);
+    free(table_name);
     fclose(fp);
 }
 

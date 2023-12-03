@@ -28,6 +28,8 @@
 #include "message.h"
 #include "utils.h"
 #include "client_context.h"
+#include <pthread.h>
+
 
 #define DEFAULT_QUERY_BUFFER_SIZE 1024
 
@@ -46,7 +48,9 @@
  * This is the execution routine after a client has connected.
  * It will continually listen for messages from the client and execute queries.
  **/
-void handle_client(int client_socket) {
+void handle_client(void* client_socket_arg) {
+    int client_socket = *((int*)client_socket_arg);
+    free(client_socket_arg);
     int done = 0;
     int length = 0;
     bool shutdown = false;
@@ -60,6 +64,8 @@ void handle_client(int client_socket) {
     // create the client context here
     ClientContext* client_context = (ClientContext*) malloc(sizeof(ClientContext));
     client_context->is_batch = false;
+    client_context->num_selects = 0;
+    
 
     // create variable pool for a given client
     CatalogHashtable* variable_pool = NULL;
@@ -101,12 +107,11 @@ void handle_client(int client_socket) {
             
 
             // 1. Parse command
-            //    Query string is converted into a request for an database operator
-            char* result = parse_command(recv_message.payload, &send_message, client_socket, client_context, variable_pool, batch_queue);
+    
+            char* result = parse_command(recv_message.payload, &send_message, client_socket, 
+                                                client_context, variable_pool, batch_queue);
 
             // 2. Handle request
-            //    Corresponding database operator is executed over the query
-            //char* result = execute_DbOperator(query);
 
             if (result == NULL) {
                 result = "";
@@ -134,6 +139,7 @@ void handle_client(int client_socket) {
 
     log_info("Connection closed at socket %d!\n", client_socket);
     close(client_socket);
+    pthread_exit(NULL);
     if (shutdown == true) {
         deallocate(variable_pool);
         exit(0);
@@ -185,6 +191,16 @@ int setup_server() {
     return server_socket;
 }
 
+void initialize_catalogue() {
+    // Example: Reset a file-based catalogue
+    FILE *fp = fopen("catalogue.txt", "w");
+    if (fp != NULL) {
+        fclose(fp); // Truncates the file
+    }
+    // Additional initialization steps can be added here
+}
+
+
 // Currently this main will setup the socket and accept a single client.
 // After handling the client, it will exit.
 // You WILL need to extend this to handle MULTIPLE concurrent clients
@@ -194,8 +210,7 @@ int setup_server() {
 //      How will you extend main to handle multiple concurrent clients? 
 //      Is there a maximum number of concurrent client connections you will allow?
 //      What aspects of siloes or isolation are maintained in your design? (Think `what` is shared between `whom`?)
-int main(void)
-{
+int main(void) {
     signal(SIGPIPE, SIG_IGN);
 
     int server_socket = setup_server();
@@ -205,16 +220,25 @@ int main(void)
 
     log_info("Waiting for a connection %d ...\n", server_socket);
 
-    struct sockaddr_un remote;
-    socklen_t t = sizeof(remote);
-    int client_socket = 0;
+    while(1) {
+        struct sockaddr_un remote;
+        socklen_t t = sizeof(remote);
+        int* client_socket = malloc(sizeof(int));  // Allocate memory for client socket
 
-    if ((client_socket = accept(server_socket, (struct sockaddr *)&remote, &t)) == -1) {
-        log_err("L%d: Failed to accept a new connection.\n", __LINE__);
-        exit(1);
+        if ((*client_socket = accept(server_socket, (struct sockaddr *)&remote, &t)) == -1) {
+            log_err("L%d: Failed to accept a new connection.\n", __LINE__);
+            free(client_socket);  // Clean up memory in case of failure
+            continue;  // Continue to next iteration
+        }
+
+        pthread_t thread_id;
+        if (pthread_create(&thread_id, NULL, handle_client, client_socket) != 0) {
+            log_err("Failed to create thread for new client.\n");
+            free(client_socket);
+        }
     }
-  
-    handle_client(client_socket);
-  
+
+    close(server_socket);
     return 0;
 }
+
