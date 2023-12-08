@@ -100,6 +100,8 @@ void handle_client(void* client_socket_arg) {
             // check for shutdown 
             if (strncmp(recv_message.payload, "shutdown", 8) == 0) {
                 log_info("-- Shutting down!\n");
+                deallocate(variable_pool);
+                client_context = NULL;
                 shutdown = true;
                 done = 1;
                 break;

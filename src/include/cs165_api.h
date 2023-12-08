@@ -182,7 +182,7 @@ typedef struct SelectObject{
     char handle[MAX_SIZE_NAME];
     int minval; // Starting index of the scan.
     int maxval; // Ending index of the scan.
-    int results[1001]; // to store results
+    int results[10240]; // to store results
     pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
 } SelectObject;
 
@@ -192,6 +192,9 @@ typedef struct ClientContext {
     char batch_identifier[MAX_SIZE_NAME];
     SelectObject* selects[100];
     int num_selects;
+    // For loading -> to be persisted upon shutdown
+    //char* cols_in_vpool[2040];
+    
 } ClientContext;
 
 
@@ -276,6 +279,8 @@ typedef struct DbOperator {
 
 extern Db *current_db;
 
+
+
 // CODE FOR HASHTABLE IMPLEMENTATION OF CATALOG -> also used for variable pool
 
 typedef struct CatalogEntry {
@@ -287,6 +292,9 @@ typedef struct CatalogEntry {
     struct CatalogEntry *next;  // In case of collisions, we use chaining
     bool in_vpool;
     int bitvector[10240]; // For variable pool
+    bool is_column;
+    char* data; // This will point to the memory-mapped file or a string
+    size_t data_size; // Size of the data
     bool has_value;
     float value; // For arithmetic operators
 } CatalogEntry;

@@ -36,6 +36,7 @@
 
 char* makePath(char* name, CreateType t);
 
+
 /**
  * Takes a pointer to a string.
  * This method returns the original string truncated to where its first comma lies.
@@ -82,6 +83,7 @@ int allocate(CatalogHashtable** ht, int size) {
 }
 
 // THIS METHOD RETRIEVES THE CATALOG ENTRY FOR A GIVEN OBJECT (CAN BE DB TB OR CL)
+// CAN BE IDENTIFIED BY NAME OR BY FILEPATH (filepath.txt = name if column)
 CatalogEntry* get(CatalogHashtable* ht, char* name) {
     if (ht != NULL) {
         int key = hash(name);
@@ -90,7 +92,7 @@ CatalogEntry* get(CatalogHashtable* ht, char* name) {
         while (target_node_ptr != NULL && !found) {
             CatalogEntry target = *target_node_ptr;
             //perror(target.name);
-            if (strcmp(target.name, name) == 0) {
+            if (strcmp(target.name, name) == 0) { // || (target.filepath != NULL && (strcmp(target.filepath, name) == 0)) maybe
                 found = true;
             }
             else {
@@ -167,12 +169,31 @@ int removenode(CatalogEntry** current, CatalogEntry** temp, CatalogEntry** previ
     free(current_loc);
     return 0;
 }
+
+int sync_col(CatalogEntry* col) {
+    if (col->is_column != NULL && col->is_column == true) {
+		int rflag = msync(col->data, col->data_size, MS_SYNC);
+		if(rflag == -1) {
+            perror("Unable to msync.\n");
+            return -1;
+		}
+		rflag = munmap(col->data, col->data_size);
+        if(rflag == -1) {
+            perror("Unable to munmap.\n");
+            return -1;
+        }
+        return 0;
+    }
+    return -1; 
+}
+
 // HELPER FUNCTION TO AVOID MEMORY LEAKS
 int deallocate_bucket(CatalogEntry* head) {
     CatalogEntry *temp;
     while (head != NULL) {
         temp = head;
         head = head->next;
+        sync_col(temp);
         free(temp);
     }
     return 0;
@@ -254,6 +275,53 @@ CatalogEntry* line_to_entry(char* line, int line_num){
     cat->next = (CatalogEntry*)NULL;
     cat->line = line_num;
     return cat;
+}
+
+// Adds an element with filename = db.tbl.cl to correct file granted that cl exists in catalog
+// Primarily used in 'load'
+int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_pool) {
+
+
+    CatalogEntry* this_table = get(variable_pool, filename);
+
+    if (!this_table) {
+        //perror("Error retriving column");
+        fprintf(stderr, "Error retriving column: %s", filename);
+        return -1;
+    }
+
+    // Check for collisions
+    while (this_table != NULL && this_table->filepath == NULL || strcmp(this_table->filepath, filename) != 0) {
+        //fprintf(stdout, "%s\n", (this_table)->filepath);
+        this_table = this_table->next;
+    }
+
+    if (this_table == NULL || !(this_table->is_column)) {
+        perror("Error retrieving correct column");
+        return -1;
+    }
+
+    // NOW ADD THE CHAR* TO THE END OF THE MEMORY MAPPED FILE
+
+    char* line = malloc(1024);
+    strcpy(line, val);
+    strcat(line, "\n");
+
+    //fprintf(stdout, "LINE: %s\n", line);
+
+    strcat(this_table->data, line);
+
+    //fprintf(stdout, "DATA: %s\n", this_table->data);
+    
+    /*
+
+    fprintf(file, "%s\n", val);
+
+    */
+
+   free(line);
+
+    return 0;
 }
 
 
@@ -343,7 +411,7 @@ CatalogHashtable* populate_catalog(FILE* file) {
  * It parses those arguments, checks that they are valid, and creates a column - both in the catalog, and a physical file.
  */
 
-DbOperator* parse_create_col(char* create_arguments) {
+DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool) {
     message_status status = OK_DONE;
     char** create_arguments_index = &create_arguments;
     char* column_name = next_token(create_arguments_index, &status);
@@ -364,7 +432,7 @@ DbOperator* parse_create_col(char* create_arguments) {
     table_name[last_char] = '\0';
 
     // join tablename with column name for path
-    char* startpath = (char*)malloc(strlen(table_name) + strlen(column_name) + 1);
+    char* startpath = (char*)malloc(strlen(table_name) + strlen(column_name) + 3);
     strcpy(startpath, table_name);
     strcat(startpath, ".");
     strcat(startpath, column_name);
@@ -387,15 +455,60 @@ DbOperator* parse_create_col(char* create_arguments) {
     fprintf(file, "%s,%s,%s\n", column_name, path, "cl");
     fclose(file);
 
-    // Create actual files
+    // Create actual files. And then create a memory mapped copy to add to the variable pool.
+    // If vpool has a full column object then the name/filepath will have a .txt
+
     strcat(path,".txt");
-    FILE* file2 = fopen(path, "w");
-    if (!file2) {
+
+    int capacity = 10240; // No. of elements that the column can hold
+    int line_size = 1024; // Size of line
+    size_t full_size = capacity * line_size; // Total size for memory mapping
+
+    // Open the file with read and write permissions, create if it doesn't exist
+    int fd = open(path, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
         perror("Error opening file");
         return NULL;
-        }
-    fprintf(file2, "COL NAME: %s\n", column_name);
-    fclose(file2);
+    }
+
+    // Extend the file to the desired size
+    if (ftruncate(fd, full_size) == -1) {
+        perror("Error extending file size");
+        close(fd);
+        return NULL;
+    }
+
+    // Memory map the file
+    char* data = mmap(NULL, full_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        perror("Error mapping file");
+        close(fd);
+        return NULL;
+    }
+
+    // Use data[] as an array here, e.g., writing column name at the start
+    snprintf(data, line_size, "COL NAME: %s\n", column_name);
+
+    // ... Additional operations on data[] ...
+
+    close(fd);
+
+
+    // add memory mapped column to catalogue
+
+    CatalogEntry* cat = (CatalogEntry*) malloc(sizeof(CatalogEntry)); //FREE
+
+    strcpy(cat->name, path);
+    strcpy(cat->filepath, path); //maybe redundant
+    //cat->data = malloc(full_size * sizeof(char));
+    //strcpy(cat->data, data);
+    cat->data = data;
+    cat->data_size = full_size;
+    cat->is_column = true;
+
+    put(variable_pool, *cat);
+
+    //fclose(file2);
     free(path);
 
     // make create dbo for table
@@ -440,7 +553,7 @@ DbOperator* parse_create_tbl(char* create_arguments) {
         return NULL;
     }
 
-    char* startpath = (char*)malloc(strlen(db_name) + strlen(table_name) + 1);
+    char* startpath = (char*)malloc(strlen(db_name) + strlen(table_name) + 2);
     strcpy(startpath, db_name);
     strcat(startpath, ".");
     strcat(startpath, table_name);
@@ -619,7 +732,7 @@ char* makePath(char* name, CreateType t) {
 /**
  * parse_create parses a create statement and then passes the necessary arguments off to the next function
  **/
-DbOperator* parse_create(char* create_arguments) {
+DbOperator* parse_create(char* create_arguments, CatalogEntry* variable_pool) {
     message_status mes_status;
     DbOperator* dbo = NULL;
     char *tokenizer_copy, *to_free;
@@ -632,20 +745,18 @@ DbOperator* parse_create(char* create_arguments) {
         tokenizer_copy++;
         // token stores first argument. Tokenizer copy now points to just past first ","
         token = next_token(&tokenizer_copy, &mes_status);
-        if (mes_status == INCORRECT_FORMAT) {
-            return NULL;
+  
+        // pass off to next parse function. 
+        if (strcmp(token, "db") == 0) {
+            dbo = parse_create_db(tokenizer_copy);
+        } else if (strcmp(token, "tbl") == 0) {
+            dbo = parse_create_tbl(tokenizer_copy);
+        } else if (strcmp(token, "col") == 0){
+            dbo = parse_create_col(tokenizer_copy, variable_pool);
         } else {
-            // pass off to next parse function. 
-            if (strcmp(token, "db") == 0) {
-                dbo = parse_create_db(tokenizer_copy);
-            } else if (strcmp(token, "tbl") == 0) {
-                dbo = parse_create_tbl(tokenizer_copy);
-            } else if (strcmp(token, "col") == 0){
-                dbo = parse_create_col(tokenizer_copy);
-            } else {
-                mes_status = UNKNOWN_COMMAND;
-            }
+            mes_status = UNKNOWN_COMMAND;
         }
+
     } else {
         mes_status = UNKNOWN_COMMAND;
     }
@@ -653,12 +764,15 @@ DbOperator* parse_create(char* create_arguments) {
     return dbo;
 }
 // For 'insert'
-int add_element_to_file(char* fname, char* abspath, char* val) {
+int add_element_to_file(char* fname, char* abspath, char* val, CatalogHashtable* variable_pool) {
     char *fullpath = malloc(100);
     strcpy(fullpath, abspath);
     strcat(fullpath, "/");
     strcat(fullpath, fname);
 
+    add_element_for_load(fullpath, val, variable_pool);
+
+    /*
     FILE* file = fopen(fullpath, "a");
     if (!file) {
         perror("Error opening file");
@@ -666,9 +780,11 @@ int add_element_to_file(char* fname, char* abspath, char* val) {
         }
     fprintf(file, "%s\n", val);
     fclose(file);
+    */
     free(fullpath);
     return 0;
 }
+
 
 
 /**
@@ -676,7 +792,7 @@ int add_element_to_file(char* fname, char* abspath, char* val) {
  * then passes these arguments to a database function to insert a row.
  **/
 
-DbOperator* parse_insert(char* query_command, message* send_message) {
+DbOperator* parse_insert(char* query_command, message* send_message, CatalogHashtable* variable_pool) {
     //unsigned int columns_inserted = 0;
     char* token = NULL;
     // check for leading '('
@@ -685,12 +801,13 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
         char** command_index = &query_command;
         // parse table input
         char* table_name = next_token(command_index, &send_message->status);
-        char* catname = getName(table_name);
+        //char* catname = getName(table_name);
         char* catpath = makePath(table_name, _TABLE);
 
         if (send_message->status == INCORRECT_FORMAT) {
             return NULL;
         }
+        /*
 
         // find entry for this table in catalog
         FILE* file = fopen("catalogue.txt", "r");
@@ -715,6 +832,9 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
         }
 
         char* path = (*this_table).filepath;
+        */
+
+        char* path = catpath;
 
         // find paths of columns within this table
         struct dirent *entry;
@@ -732,11 +852,72 @@ DbOperator* parse_insert(char* query_command, message* send_message) {
                 if (strchr(token, ')')) {
                     *strchr(token, ')') = '\0';
                 }
-                add_element_to_file(entry->d_name, path, token);
+                add_element_to_file(entry->d_name, path, token, variable_pool);
             }
         }
         free(catpath);
         closedir(dir);
+
+        DbOperator* dbo = malloc(sizeof(DbOperator));
+ 
+        return dbo;
+    } else {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+}
+
+// char* get_array(char* filepath, )
+
+DbOperator* parse_load_insert(char* query_command, message* send_message, CatalogHashtable* variable_pool, ClientContext* context) {
+
+    // IF WE ARE ALREADY IN A LOAD, just run the add function with colname (txt will be added) and value
+
+    // IF WE ARE NOT IN A LOAD, MEMORY MAP THE RELAVENT FILES? Then do regular thing?
+
+    // FOR NOW, WE ASSUME THAT A LOAD WILL FOLLOW A CREATE COLUMN AND SO OUR COLUMN WILl BE IN VPOOL
+
+    char* token = NULL;
+    // check for leading '('
+    if (strncmp(query_command, "(", 1) == 0) {
+        query_command++;
+        char** command_index = &query_command;
+        // parse table input
+        char* table_name = next_token(command_index, &send_message->status);
+        char* val = next_token(command_index, &send_message->status);
+        val = trim_parenthesis(val);
+        char* catpath = makePath(table_name, _TABLE);
+        strcat(catpath, ".txt");
+        
+
+        if (send_message->status == INCORRECT_FORMAT) {
+            return NULL;
+        }
+
+        // find entry for this table in catalog
+        FILE* file = fopen("catalogue.txt", "r");
+        if (!file) {
+            // handle error, free catname and catpath
+            free(catpath);
+            return NULL;
+        }
+
+        fclose(file);
+
+        CatalogEntry* this_table = get(variable_pool, catpath);
+
+        if (!this_table) {
+            free(catpath);
+            fprintf(stdout, "COULDT FIND COLUMN!!\n");
+            return NULL;
+        }
+
+        // Check for collisions
+        while (strcmp((*this_table).filepath, catpath) != 0) {
+            this_table = this_table->next;
+        }
+
+        add_element_for_load(catpath, val, variable_pool);
 
         DbOperator* dbo = malloc(sizeof(DbOperator));
  
@@ -772,7 +953,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         // Dealing with column
         char* name = getName(arg1);
         char* catpath = makePath(arg1, _COLUMN);
-        
+        /*
         // retrieve filename from catalog
         FILE* file1 = fopen("catalogue.txt", "r");
         CatalogHashtable* ht = populate_catalog(file1);
@@ -789,6 +970,8 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
             return NULL;
         }
         char* fullpath = (*this_table).filepath;
+        */
+        char* fullpath = catpath;
         strcat(fullpath, ".txt");
         // open column file
         FILE* file = fopen(fullpath, "r");
@@ -835,6 +1018,10 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         int count = 0;
         // Now loop through each subsequent line
         while (fgets(line, sizeof(line), file)) {
+            fprintf("SELECT LINE IS: %s", line);
+            if (strncmp(line, "\0", 1) == 0) {
+                break;
+            }
             // Remove the newline character, if present
             size_t len = strlen(line);
             if (len > 0 && line[len - 1] == '\n') {
@@ -845,9 +1032,11 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
             // For our bitvector, false === INT_MIN and true === INT_MAX (this allows us to use the bitvector object for a value vector)
             int val;
             if (lineval < ihigh && lineval >= ilow) {
+                fprintf(stdout, "%i IS between %i and %i", lineval, ilow, ihigh);
                 val = INT_MAX;
             }
             else {
+                fprintf(stdout, "%i IS NOT between %i and %i", lineval, ilow, ihigh);
                 val = INT_MIN;
             }
             cat->bitvector[count] = val;
@@ -926,7 +1115,8 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
 
     char* name = getName(colname);
     char* catpath = makePath(colname, _COLUMN);
-    
+
+    /*
     // retrieve filename from catalog
     FILE* file1 = fopen("catalogue.txt", "r");
     CatalogHashtable* ht = populate_catalog(file1);
@@ -944,6 +1134,8 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
     }
 
     char* fullpath = (*this_table).filepath;
+    */
+    char* fullpath = catpath;
     strcat(fullpath, ".txt");
     // open column file
     FILE* file = fopen(fullpath, "r");
@@ -973,6 +1165,11 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
     int count = 0;
     // Now loop through each subsequent line
     while (fgets(line, sizeof(line), file)) {
+        fprintf(stdout, "LINE IS: %s\n", line);
+        fprintf(stdout, "PVECTOR NAME IS: %s\n", pvector->name);
+        if (strncmp(line, "\0", 1) == 0) {
+            break;
+        }
         // Remove the newline character, if present
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') {
@@ -982,15 +1179,18 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         
         // Now 'line' contains the current line from the file without the newline character
         if (pvector->bitvector[count] != INT_MIN) {
+            fprintf(stdout, "THIS IS!!! IN THE SET\n");
             cat->bitvector[count] = lineval;
         }
         else {
             cat->bitvector[count] = INT_MIN;
+            fprintf(stdout, "THIS IS NOT! IN THE SET\n");
         }
         count++;
     }
     cat->size = count;
     cat->in_vpool = true;
+    cat->has_value = false;
 
     put(variable_pool, *cat);
 
@@ -1048,6 +1248,7 @@ int print_vector(char* token, CatalogHashtable* variable_pool) {
     }
     // check if it simply a return value and not a full vector
     if (vvector->has_value == true) {
+        fprintf(stdout, "THIS HAS A VALUE UH OH!!!");
         char buffer[12];
         if (vvector->value == (int) vvector->value) {
             snprintf(buffer, sizeof(buffer), "%d", (int)vvector->value);
@@ -1060,6 +1261,7 @@ int print_vector(char* token, CatalogHashtable* variable_pool) {
     }
     else {
         int size = vvector->size;
+        fprintf(stdout, "SIZE IS: %i", size);
         for (int i=0; i<size; i++) {
             if (vvector->bitvector[i] != INT_MIN && vvector->bitvector[i] != INT_MAX) {
                 char buffer[12];
@@ -1105,9 +1307,11 @@ char* parse_print(char* query_command, message* send_message, CatalogHashtable* 
     fclose(clearCombined);
     while (last_char < 0 || token[last_char] != ')') {
         if (contains_dot(token)) {
+            fprintf(stdout, "PRINTING A COLUMN!!!");
             print_column(token);
         }
         else {
+            fprintf(stdout, "PRINTING A VECTOR!!!");
             print_vector(token, variable_pool);
         }
         token = next_token(command_index, &send_message->status);
@@ -1123,9 +1327,11 @@ char* parse_print(char* query_command, message* send_message, CatalogHashtable* 
     }
     token = trim_parenthesis(token);
     if (contains_dot(token)) {
+        fprintf(stdout, "PRINTING A COLUMN!!!");
         print_column(token);
     }
     else {
+        fprintf(stdout, "PRINTING A VECTOR!!!");
         print_vector(token, variable_pool);
     }
 
@@ -1902,6 +2108,8 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
     char* arg1 = context->batch_identifier;
     char* name = getName(arg1);
     char* catpath = makePath(arg1, _COLUMN);
+
+    /*
     
     // retrieve filename from catalog
     FILE* file1 = fopen("catalogue.txt", "r");
@@ -1920,6 +2128,8 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
     }
 
     char* fullpath = (*this_table).filepath;
+    */
+    char* fullpath = catpath;
     strcat(fullpath, ".txt");
     // open column file
     FILE* file = fopen(fullpath, "r");
@@ -1928,7 +2138,7 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
         return NULL;
     }
 
-    
+
     char line[1024];
     // Skip the first line
 
@@ -1941,6 +2151,9 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
     int count = 0;
     // Now loop through each subsequent line
     while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "\0", 1) == 0) {
+            break;
+        }
         // Remove the newline character, if present
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') {
@@ -1967,9 +2180,9 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
 
         }
         count++;
+        printf("%i", count);
     }
         
-    fclose(file);
 
     for (int i=0; i<context->num_selects; i++) {
         SelectObject* obj_in_question = context->selects[i];
@@ -1986,6 +2199,8 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
         cat->in_vpool = true;
         put(variable_pool, *cat);
     }
+
+    fclose(file);
 
     DbOperator* dbo = malloc(sizeof(DbOperator));
     return dbo;
@@ -2038,7 +2253,7 @@ Queue* batch_queue) {
     // check what command is given. 
     if (strncmp(query_command, "create", 6) == 0) {
         query_command += 6;
-        dbo = parse_create(query_command);
+        dbo = parse_create(query_command, variable_pool);
         if(dbo == NULL){
             send_message->status = INCORRECT_FORMAT;
         }
@@ -2047,7 +2262,10 @@ Queue* batch_queue) {
         }
     } else if (strncmp(query_command, "relational_insert", 17) == 0) {
         query_command += 17;
-        dbo = parse_insert(query_command, send_message);
+        dbo = parse_insert(query_command, send_message, variable_pool);
+    } else if (strncmp(query_command, "load_insert", 11) == 0) {
+        query_command += 17;
+        dbo = parse_load_insert(query_command, send_message, variable_pool, context);
     } else if (handle != NULL && (strncmp(query_command, "select", 6) == 0)) {
         query_command += 6;
         if (context->is_batch) {
@@ -2080,7 +2298,10 @@ Queue* batch_queue) {
     } else if (handle != NULL && strncmp(query_command, "sub", 3) == 0) {
         query_command += 3;
         dbo = parse_sub(query_command, handle, send_message, variable_pool); 
-    } else if (strncmp(query_command, "batch_queries()", 15) == 0) {
+    } /*else if (handle != NULL && strncmp(query_command, "shutdown", 8) == 0) {
+        query_command += 3;
+        dbo = parse_shutdown(query_command, handle, send_message, variable_pool, context); 
+    }*/ else if (strncmp(query_command, "batch_queries()", 15) == 0) {
         query_command += 13;
         context->is_batch = true;
     } else if (strncmp(query_command, "batch_execute", 13) == 0) {
