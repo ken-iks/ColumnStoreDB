@@ -300,7 +300,7 @@ typedef struct CatalogEntry {
 } CatalogEntry;
 
 typedef struct CatalogHashtable {
-    CatalogEntry* table[101]; // An array of pointers to entries
+    CatalogEntry* table[5003]; // An array of pointers to entries
 } CatalogHashtable;
 
 

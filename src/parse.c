@@ -54,7 +54,7 @@ char* next_token(char** tokenizer, message_status* status) {
 
 /**
  * This method takes a char* filepath and maps it to a bucket in our Catalogue Hashtable
- * We use a division remainder method - table size currently 101 (subject to change)
+ * We use a division remainder method - table size currently 5003 (subject to change)
 */
 
 unsigned long hash(const char *str) {
@@ -62,7 +62,7 @@ unsigned long hash(const char *str) {
     int c;
     while ((c = *str++))
         hash = c + (hash << 6) + (hash << 16) - hash;
-    return hash % 101;
+    return hash % 5003;
 }
 
 
@@ -71,7 +71,7 @@ int allocate(CatalogHashtable** ht, int size) {
     *ht = (CatalogHashtable *)malloc(sizeof(CatalogHashtable));
     if (*ht != NULL) {
         CatalogHashtable t;
-        for (int i = 0; i < 101; i++) {
+        for (int i = 0; i < 5003; i++) {
             t.table[i] = (CatalogEntry*) NULL;
         }
         **ht = t;
@@ -222,7 +222,7 @@ int erase(CatalogHashtable* ht, char* name) {
 // THIS CLEARS THE HASHTABLE FROM MEMORY TO AVOID MEMORY LEAKS
 int deallocate(CatalogHashtable* ht) {
     if (ht != NULL) {
-        for (int i=0; i<101; i++) {
+        for (int i=0; i<5003; i++) {
             deallocate_bucket((*ht).table[i]);
         }
         free(ht);
@@ -1145,6 +1145,7 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         }
     // retrieve bitvector
     CatalogEntry* pvector = get(variable_pool, bitvname);
+
  
 
     char line[1024];
