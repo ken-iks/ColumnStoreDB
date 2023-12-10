@@ -194,6 +194,7 @@ typedef struct ClientContext {
     int num_selects;
     // For loading -> to be persisted upon shutdown
     //char* cols_in_vpool[2040];
+    bool multithread;
     
 } ClientContext;
 
@@ -278,6 +279,24 @@ typedef struct DbOperator {
 } DbOperator;
 
 extern Db *current_db;
+
+typedef struct {
+    int startLine;
+    int endLine;
+    int startOffset;
+    int endOffset;
+    int ihigh;
+    int ilow;
+    char handle[MAX_SIZE_NAME];
+    char filepath[MAX_SIZE_NAME];
+    bool is_column;
+    int pvector[10240];
+    int vvector[10240];
+
+    int* bitvector;
+    
+    // Other necessary fields
+} ThreadArgs;
 
 
 

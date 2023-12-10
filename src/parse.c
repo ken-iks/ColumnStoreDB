@@ -280,10 +280,7 @@ CatalogEntry* line_to_entry(char* line, int line_num){
 // Adds an element with filename = db.tbl.cl to correct file granted that cl exists in catalog
 // Primarily used in 'load'
 int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_pool) {
-
-
     CatalogEntry* this_table = get(variable_pool, filename);
-
     if (!this_table) {
         //perror("Error retriving column");
         fprintf(stderr, "Error retriving column: %s", filename);
@@ -1018,7 +1015,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         int count = 0;
         // Now loop through each subsequent line
         while (fgets(line, sizeof(line), file)) {
-            fprintf("SELECT LINE IS: %s", line);
+            fprintf(stdout, "SELECT LINE IS: %s", line);
             if (strncmp(line, "\0", 1) == 0) {
                 break;
             }
@@ -1099,6 +1096,366 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
     return dbo;
 }
 
+
+/*
+MULTITHREADING THE SELECT
+*/
+
+void* threadFunction(void* arg) {
+    ThreadArgs* threadArgs = (ThreadArgs*) arg;
+    if (threadArgs->is_column == true) {
+
+        // Open the file (consider thread-safe mechanisms or separate file pointers)
+        FILE* file = fopen(threadArgs->filepath, "r");
+        if (!file) {
+            perror("Error opening file");
+            return NULL;
+        }
+        // Process the assigned lines
+        char line[1024];
+        fseek(file, threadArgs->startOffset, SEEK_SET); // Adjust file position
+        if (fseek(file, threadArgs->startOffset, SEEK_SET) != 0) {
+            perror("Seek error");
+        }
+
+        long currentOffset = threadArgs->startOffset;
+        int currentLine = threadArgs->startLine;
+        while (currentOffset <= threadArgs->endOffset) {
+             if (fgets(line, sizeof(line), file) == NULL) {
+                // Check for end-of-file versus an error
+                if (feof(file)) {
+                    break; // End of file reached
+                } else {
+                    perror("Error reading file");
+                    fclose(file);
+                    return NULL;
+                }
+            }
+            else {
+
+                //fprintf(stdout, "SELECT LINE IS: %s", line);
+                /*
+                if (strncmp(line, "\0", 1) == 0) {
+                    break;
+                }
+                */
+                // Remove the newline character, if present
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') {
+                    line[len - 1] = '\0';
+                }
+                int lineval = atoi(line);
+                // Now 'line' contains the current line from the file without the newline character
+                // For our bitvector, false === INT_MIN and true === INT_MAX (this allows us to use the bitvector object for a value vector)
+                int val;
+                if (lineval < threadArgs->ihigh && lineval >= threadArgs->ilow) {
+                    //fprintf(stdout, "%i IS between %i and %i. So line %i is a YES!\n", lineval, threadArgs->ilow, threadArgs->ihigh, currentLine-1);
+                    val = INT_MAX;
+                }
+                else {
+                    //fprintf(stdout, "%i IS NOT between %i and %i. So line %i is a NO!\n", lineval, threadArgs->ilow, threadArgs->ihigh, currentLine-1);
+                    val = INT_MIN;
+                }
+                threadArgs->bitvector[currentLine-1] = val;
+                currentLine++;
+                if (file == NULL) {
+                    perror("FILE CORRUPTED");
+                    return NULL;
+                }
+                if (ferror(file)) {
+                    perror("FILE CORRUPTED");
+                    return NULL;
+                }
+                currentOffset = ftell(file);
+                if (currentOffset == -1L) {
+                    perror("ftell failed");
+                    fclose(file);
+                    return NULL;
+                }
+            }
+        }
+
+        if (fclose(file) != 0) {
+            perror("Error closing file");
+            return NULL;
+        }
+    } 
+    else {
+
+        // assume that both vectors are the same size (one is treated as a bit vector and one as val vector)
+        for (int i=threadArgs->startLine; i<threadArgs->endLine; i++) {
+            int val;
+            if (threadArgs->pvector[i] != INT_MIN && (threadArgs->vvector[i] > threadArgs->ilow && threadArgs->vvector[i] < threadArgs->ihigh)) {
+                fprintf(stdout, "%i IS between %i and %i. So line %i is a YES!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
+                val = INT_MAX;
+            }
+            else {
+                val = INT_MIN;
+                fprintf(stdout, "%i IS NOT between %i and %i. So line %i is a NO!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
+            }
+            threadArgs->bitvector[i] = val;
+        }
+
+    }
+    //fprintf(stdout, "DO I FINISH ANY THREAD?\n");
+    return NULL;
+}
+
+DbOperator* parse_select_multithread(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
+    if (strncmp(query_command, "(", 1) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+    query_command++;
+    char** command_index = &query_command;
+
+    int threadCount = 4; // Number of threads
+    pthread_t threads[threadCount];
+    ThreadArgs args[threadCount];
+    
+    // parse table input
+    char* arg1 = next_token(command_index, &send_message->status);
+    if (contains_dot(arg1)) {
+        // Dealing with column
+        char* name = getName(arg1);
+        char* catpath = makePath(arg1, _COLUMN);
+        char* fullpath = catpath;
+        strcat(fullpath, ".txt");
+        // open column file
+        FILE* file = fopen(fullpath, "r");
+        if (!file) {
+            perror("Error opening file");
+            return NULL;
+            }
+
+        char* low = next_token(command_index, &send_message->status);
+        char* high = next_token(command_index, &send_message->status);
+        high = trim_parenthesis(high);
+        int ilow;
+        int ihigh;
+        if (strcmp(low, "null") == 0) {
+            ilow = INT_MIN;
+        } else {
+            ilow = atoi(low);
+        }
+        if (strcmp(high, "null") == 0) {
+            ihigh = INT_MAX;
+        } else {
+            ihigh = atoi(high);
+        }
+
+        char line[1024];
+        // Skip the first line
+        /*
+        if (!fgets(line, sizeof(line), file)) {
+            perror("Error reading file");
+            fclose(file);
+            return NULL;
+        }
+        */
+        int lineCount = 0;
+        long *lineOffsets = malloc(sizeof(long) * 102400);
+        long currentOffset = 0;
+        // Count lines
+        while (fgets(line, sizeof(line), file)) {
+            if (strncmp(line, "\0", 1) == 0) {
+                break;
+            }
+            lineOffsets[lineCount] = currentOffset;
+            //fprintf(stdout, "LINE OFFSET NUMBER: %i is at offset %i, and has val %s", lineCount, currentOffset, line);
+            currentOffset = ftell(file);
+            lineCount++;
+        }
+        
+        fclose(file);
+
+        int nums[5];
+        nums[0] = 1;
+        nums[1] = lineCount / 4;
+        nums[2] = (lineCount / 4) * 2;
+        nums[3] = (lineCount / 4) * 3;
+        nums[4] = lineCount-1;
+
+
+        // Split the file into portions and initialize thread arguments
+        for (int i = 0; i < threadCount; ++i) {
+            args[i].startLine = nums[i];
+            args[i].endLine = nums[i+1];
+            args[i].startOffset = lineOffsets[nums[i]]; // Calculate start line for this thread
+            args[i].endOffset = lineOffsets[nums[i+1]]; // Calculate end line for this thread
+            //fprintf(stdout, "THREAD %i is %i (offset %i) to %i (offset %i)\n", i, nums[i], lineOffsets[nums[i]], nums[i+1], lineOffsets[nums[i+1]]);
+            strcpy(args[i].filepath, fullpath);
+            args[i].is_column = true;
+            strcpy(args[i].handle, handle);
+            args[i].ihigh = ihigh;
+            args[i].ilow = ilow;
+            args[i].bitvector = malloc((lineOffsets[nums[i+1]] - lineOffsets[nums[i]]) * sizeof(int));
+            // Initialize other necessary fields
+
+            // Create the thread
+            if (pthread_create(&threads[i], NULL, threadFunction, &args[i])) {
+                perror("Failed to create thread");
+            }
+        }
+
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        // Wait for threads and aggregate results
+        int* finalBitvector = malloc(lineCount * sizeof(int));
+        int finalIndex = 0;
+        for (int i = 0; i < threadCount; ++i) {
+            pthread_join(threads[i], NULL);
+            /*
+            int segmentSize = nums[i+1] - nums[i];
+            memcpy(finalBitvector + finalIndex, args[i].bitvector, segmentSize * sizeof(int));
+            finalIndex += segmentSize;
+            */
+            for (int j=args[i].startLine-1; j<args[i].endLine; ++j) {
+                if (args[i].bitvector[j] == INT_MAX) {
+                    cat->bitvector[j] = INT_MAX;
+                }
+                else {
+                    cat->bitvector[j] = INT_MIN;
+                }
+                finalBitvector[j] = args[i].bitvector[j];
+            }
+            free(args[i].bitvector);  // Free the individual bitvector
+        }
+
+        // TODO: GET RESULTS AND JOIN THEM
+        
+
+
+        strcpy(cat->name, handle);
+        /*
+        fprintf(stdout, "THIS IS THE FINAL BITVECTOR:\n");
+        for (int i=0; i<lineCount; i++) {
+            if (finalBitvector[i] == INT_MAX) {
+                fprintf(stdout, "Line %i is a YES\n", i);
+                cat->bitvector[i] = INT_MAX;
+            }
+            else {
+                fprintf(stdout, "Line %i is a NO\n", i);
+                cat->bitvector[i] = INT_MIN;
+            }
+        }
+        */
+
+        cat->size = lineCount;
+        cat->in_vpool = true;
+        put(variable_pool, *cat);
+        free(finalBitvector);
+
+    }
+
+    else {
+        // Dealing with pos vector
+        CatalogEntry* pvector = get(variable_pool, arg1);
+        char* vvector_name = next_token(command_index, &send_message->status);
+        CatalogEntry* vvector = get(variable_pool, vvector_name);
+        int size = pvector->size;
+
+        char* low = next_token(command_index, &send_message->status);
+        char* high = next_token(command_index, &send_message->status);
+        high = trim_parenthesis(high);
+        int ilow;
+        int ihigh;
+        if (!low) {
+            ilow = INT_MIN;
+        } else {
+            ilow = atoi(low);
+        }
+        if (!high) {
+            ihigh = INT_MAX;
+        } else {
+            ihigh = atoi(high);
+        }
+
+        int count = size;
+
+        int nums[5];
+        nums[0] = 0;
+        nums[1] = count / 4;
+        nums[2] = (count / 4) * 2;
+        nums[3] = (count / 4) * 3;
+        nums[4] = count;
+
+
+        // Split the file into portions and initialize thread arguments
+        for (int i = 0; i < threadCount; ++i) {
+            args[i].startLine = nums[i]; // Calculate start line for this thread
+            args[i].endLine = nums[i+1]; // Calculate end line for this thread
+            fprintf(stdout, "Thread %i is line %i to %i\n", i, nums[i], nums[i+1]);
+            args[i].is_column = false;
+            strcpy(args[i].handle, handle);
+            args[i].ihigh = ihigh;
+            args[i].ilow = ilow;
+            //args[i].pvector = pvector->bitvector;
+            memcpy(args[i].pvector, pvector->bitvector, sizeof(pvector->bitvector));
+            //args[i].vvector = vvector->bitvector;
+            memcpy(args[i].vvector, vvector->bitvector, sizeof(vvector->bitvector));
+            // Initialize other necessary fields
+            args[i].bitvector = malloc((count) * sizeof(int));
+            //memcpy(args[i].bitvector, vvector->bitvector, count * sizeof(int));
+
+            // Create the thread
+            if (pthread_create(&threads[i], NULL, threadFunction, &args[i])) {
+                perror("Failed to create thread");
+            }
+        }
+
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+
+        // Wait for threads and aggregate results
+        int* finalBitvector = malloc(count * sizeof(int));
+        int finalIndex = 0;
+        for (int i = 0; i < threadCount; ++i) {
+            pthread_join(threads[i], NULL);
+            /*
+            int segmentSize = nums[i+1] - nums[i];
+            memcpy(finalBitvector + finalIndex, args[i].bitvector, segmentSize * sizeof(int));
+            finalIndex += segmentSize;
+            */
+            for (int j=args[i].startLine; j<args[i].endLine; ++j) {
+                if (args[i].bitvector[j] == INT_MAX) {
+                    cat->bitvector[j] = INT_MAX;
+                }
+                else {
+                    cat->bitvector[j] = INT_MIN;
+                }
+                finalBitvector[j] = args[i].bitvector[j];
+            }
+            free(args[i].bitvector);  // Free the individual bitvector
+        }
+
+        // TODO: GET RESULTS AND JOIN THEM
+        
+        
+
+        fprintf(stdout, "AM I HERE ?");
+        strcpy(cat->name, handle);
+        //memcpy(cat->bitvector, finalBitvector, (count * sizeof(int)));
+        cat->size = count;
+        cat->in_vpool = true;
+        put(variable_pool, *cat);
+        free(finalBitvector);
+
+    }
+
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
+
+
 DbOperator* parse_fetch(char* query_command, char* handle, message* send_message, CatalogHashtable* variable_pool) {
     if (strncmp(query_command, "(", 1) != 0) {
         send_message->status = UNKNOWN_COMMAND;
@@ -1166,8 +1523,8 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
     int count = 0;
     // Now loop through each subsequent line
     while (fgets(line, sizeof(line), file)) {
-        fprintf(stdout, "LINE IS: %s\n", line);
-        fprintf(stdout, "PVECTOR NAME IS: %s\n", pvector->name);
+        //fprintf(stdout, "LINE IS: %s\n", line);
+        //fprintf(stdout, "PVECTOR NAME IS: %s\n", pvector->name);
         if (strncmp(line, "\0", 1) == 0) {
             break;
         }
@@ -1180,12 +1537,12 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         
         // Now 'line' contains the current line from the file without the newline character
         if (pvector->bitvector[count] != INT_MIN) {
-            fprintf(stdout, "THIS IS!!! IN THE SET\n");
+            //fprintf(stdout, "THIS IS!!! IN THE SET\n");
             cat->bitvector[count] = lineval;
         }
         else {
             cat->bitvector[count] = INT_MIN;
-            fprintf(stdout, "THIS IS NOT! IN THE SET\n");
+            //fprintf(stdout, "THIS IS NOT! IN THE SET\n");
         }
         count++;
     }
@@ -2110,26 +2467,6 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
     char* name = getName(arg1);
     char* catpath = makePath(arg1, _COLUMN);
 
-    /*
-    
-    // retrieve filename from catalog
-    FILE* file1 = fopen("catalogue.txt", "r");
-    CatalogHashtable* ht = populate_catalog(file1);
-    CatalogEntry* this_table = get(ht, name);
-
-    // Check for collisions
-    while (strcmp((*this_table).filepath, catpath) != 0) {
-        this_table = this_table->next;
-    }
-
-    if (!this_table) {
-        //perror("Error retriving column");
-        fprintf(stderr, "Error retriving column: %s", name);
-        return NULL;
-    }
-
-    char* fullpath = (*this_table).filepath;
-    */
     char* fullpath = catpath;
     strcat(fullpath, ".txt");
     // open column file
@@ -2273,7 +2610,12 @@ Queue* batch_queue) {
             dbo = batch_select_add(query_command, handle, send_message, variable_pool, context);
         }
         else {
-            dbo = parse_select(query_command, handle, send_message, variable_pool);
+            if (context->multithread == false) {
+                dbo = parse_select(query_command, handle, send_message, variable_pool);
+            }
+            else {
+                dbo = parse_select_multithread(query_command, handle, send_message, variable_pool);
+            }
         }
     } else if (handle != NULL && (strncmp(query_command, "fetch", 5) == 0)) {
         query_command += 5;
@@ -2305,6 +2647,12 @@ Queue* batch_queue) {
     }*/ else if (strncmp(query_command, "batch_queries()", 15) == 0) {
         query_command += 13;
         context->is_batch = true;
+    } else if (strncmp(query_command, "single_core()", 13) == 0) {
+        query_command += 13;
+        context->multithread = false;   
+    } else if (strncmp(query_command, "single_core_execute()", 21) == 0) {
+        query_command += 21;
+        context->multithread = true;   
     } else if (strncmp(query_command, "batch_execute", 13) == 0) {
         query_command += 13;
         dbo = parse_batch_execute(query_command, send_message, variable_pool, context);

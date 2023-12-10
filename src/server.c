@@ -64,6 +64,7 @@ void handle_client(void* client_socket_arg) {
     // create the client context here
     ClientContext* client_context = (ClientContext*) malloc(sizeof(ClientContext));
     client_context->is_batch = false;
+    client_context->multithread = true;
     client_context->num_selects = 0;
     
 
