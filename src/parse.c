@@ -123,7 +123,7 @@ int add_node(CatalogEntry* object_node, CatalogEntry* target_node) {
 // THIS METHOD PUTS A KEY VALUE PAIRING INTO THE HASHTABLE
 int put(CatalogHashtable* ht, CatalogEntry value) {
     // Initialize node
-    CatalogEntry* new_node = (CatalogEntry *)malloc(sizeof(CatalogEntry));
+    CatalogEntry* new_node = (CatalogEntry *)calloc(1, sizeof(CatalogEntry));
     *new_node = value;
 
     if (ht != NULL) {
@@ -493,7 +493,7 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
 
     // add memory mapped column to catalogue
 
-    CatalogEntry* cat = (CatalogEntry*) malloc(sizeof(CatalogEntry)); //FREE
+    CatalogEntry* cat = (CatalogEntry*) calloc(1,sizeof(CatalogEntry)); //FREE
 
     strcpy(cat->name, path);
     strcpy(cat->filepath, path); //maybe redundant
@@ -2545,6 +2545,178 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
 
 }
 
+void* threadFunction2(void* arg) {
+    ThreadArgs* threadArgs = (ThreadArgs*) arg;
+
+
+    // Open the file (consider thread-safe mechanisms or separate file pointers)
+    FILE* file = fopen(threadArgs->filepath, "r");
+    if (!file) {
+        perror("Error opening file");
+        return NULL;
+    }
+    // Process the assigned lines
+    char line[1024];
+
+    if (fseek(file, threadArgs->startOffset, SEEK_SET) != 0) {
+        perror("Seek error");
+    }
+
+    long currentOffset = threadArgs->startOffset;
+    int currentLine = threadArgs->startLine-1;
+    while (currentOffset <= threadArgs->endOffset) {
+        if (fgets(line, sizeof(line), file) == NULL) {
+            // Check for end-of-file versus an error
+            if (feof(file)) {
+                break; // End of file reached
+            } else {
+                perror("Error reading file");
+                fclose(file);
+                return NULL;
+                }   
+        }
+        else {
+
+            // Remove the newline character, if present
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') {
+                line[len - 1] = '\0';
+            }
+            int lineval = atoi(line);
+            // Now 'line' contains the current line from the file without the newline character
+            // For our bitvector, false === INT_MIN and true === INT_MAX (this allows us to use the bitvector object for a value vector)
+            // NOW WE CHECK EACH SELECT OBJECT IN THE CLIENT CONTEXT THIS VALUE
+            // Apply select criteria for each SelectObject
+            for (int j = 0; j < threadArgs->numSelects; j++) {
+                SelectObject* select = threadArgs->selects[j];
+                int val = (lineval >= select->minval && lineval < select->maxval) ? INT_MAX : INT_MIN;
+                select->results[currentLine] = val; // Store result; ensure this array is pre-allocated
+            }
+            currentLine++;
+            if (file == NULL) {
+                perror("FILE CORRUPTED");
+                return NULL;
+            }
+            if (ferror(file)) {
+                perror("FILE CORRUPTED");
+                return NULL;
+            }
+            currentOffset = ftell(file);
+            if (currentOffset == -1L) {
+                perror("ftell failed");
+                fclose(file);
+                return NULL;
+            }
+        }
+    }
+
+    if (fclose(file) != 0) {
+        perror("Error closing file");
+        return NULL;
+    }
+    return NULL;
+}
+
+DbOperator* parse_batch_execute_multithread(char* query_command, message* send_message, CatalogEntry* variable_pool, ClientContext* context) {
+    if (strncmp(query_command, "()", 2) != 0) {
+        send_message->status = UNKNOWN_COMMAND;
+        return NULL;
+    }
+
+    query_command++;
+    query_command++;
+    char** command_index = &query_command;
+
+    int threadCount = 4; // Number of threads
+    pthread_t threads[threadCount];
+    ThreadArgs args[threadCount];
+
+    char* arg1 = context->batch_identifier;
+    char* name = getName(arg1);
+    char* catpath = makePath(arg1, _COLUMN);
+
+    char* fullpath = catpath;
+    strcat(fullpath, ".txt");
+    // open column file
+    FILE* file = fopen(fullpath, "r");
+    if (!file) {
+        perror("Error opening file");
+        return NULL;
+    }
+    char line[1024];
+    int lineCount = 0;
+    long *lineOffsets = malloc(sizeof(long) * 102400);
+    long currentOffset = 0;
+    // Count lines
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "\0", 1) == 0) {
+            break;
+        }
+        lineOffsets[lineCount] = currentOffset;
+        //fprintf(stdout, "LINE OFFSET NUMBER: %i is at offset %i, and has val %s", lineCount, currentOffset, line);
+        currentOffset = ftell(file);
+        lineCount++;
+    }
+    
+    fclose(file);
+
+    int nums[5];
+    nums[0] = 1;
+    nums[1] = lineCount / 4;
+    nums[2] = (lineCount / 4) * 2;
+    nums[3] = (lineCount / 4) * 3;
+    nums[4] = lineCount-1;
+
+
+    
+    // Split the file into portions and initialize thread arguments
+    for (int i = 0; i < threadCount; ++i) {
+        args[i].startLine = nums[i];
+        args[i].endLine = nums[i+1];
+        args[i].startOffset = lineOffsets[nums[i]]; // Calculate start line for this thread
+        args[i].endOffset = lineOffsets[nums[i+1]]; // Calculate end line for this thread
+        //fprintf(stdout, "THREAD %i is %i (offset %i) to %i (offset %i)\n", i, nums[i], lineOffsets[nums[i]], nums[i+1], lineOffsets[nums[i+1]]);
+        strcpy(args[i].filepath, fullpath);
+        //args[i].bitvector = malloc((lineOffsets[nums[i+1]] - lineOffsets[nums[i]]) * sizeof(int));
+        args[i].numSelects = context->num_selects;
+        args[i].selects = context->selects;
+        // Initialize other necessary fields
+
+        // Create the thread
+        if (pthread_create(&threads[i], NULL, threadFunction2, &args[i])) {
+            perror("Failed to create thread");
+        }
+    }
+
+    // Wait for threads and aggregate results
+    for (int i = 0; i < threadCount; ++i) {
+        pthread_join(threads[i], NULL);
+    }
+
+    // TODO: GET RESULTS AND JOIN THEM
+        
+    for (int i=0; i<context->num_selects; i++) {
+        SelectObject* obj_in_question = context->selects[i];
+        CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        if (!cat) {
+            perror("Failed to allocate memory for CatalogEntry");
+            return NULL;
+        }
+        strcpy(cat->name, obj_in_question->handle);
+        cat->size = lineCount;
+        for (int j=0; j<lineCount; j++) {
+            cat->bitvector[j] = obj_in_question->results[j];
+        }
+        cat->in_vpool = true;
+        put(variable_pool, *cat);
+    }
+
+
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+
+}
+
 
 
 /**
@@ -2641,10 +2813,10 @@ Queue* batch_queue) {
     } else if (handle != NULL && strncmp(query_command, "sub", 3) == 0) {
         query_command += 3;
         dbo = parse_sub(query_command, handle, send_message, variable_pool); 
-    } /*else if (handle != NULL && strncmp(query_command, "shutdown", 8) == 0) {
-        query_command += 3;
-        dbo = parse_shutdown(query_command, handle, send_message, variable_pool, context); 
-    }*/ else if (strncmp(query_command, "batch_queries()", 15) == 0) {
+    } else if (handle != NULL && strncmp(query_command, "shutdown", 8) == 0) {
+        (void) query_command;
+        return NULL;
+    } else if (strncmp(query_command, "batch_queries()", 15) == 0) {
         query_command += 13;
         context->is_batch = true;
     } else if (strncmp(query_command, "single_core()", 13) == 0) {
@@ -2655,7 +2827,12 @@ Queue* batch_queue) {
         context->multithread = true;   
     } else if (strncmp(query_command, "batch_execute", 13) == 0) {
         query_command += 13;
-        dbo = parse_batch_execute(query_command, send_message, variable_pool, context);
+        if (context->multithread = false) {
+            dbo = parse_batch_execute(query_command, send_message, variable_pool, context);
+        }
+        else {
+            dbo = parse_batch_execute_multithread(query_command, send_message, variable_pool, context);
+        }
     }
     free(dbo);
     return "";

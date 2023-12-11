@@ -294,6 +294,8 @@ typedef struct {
     int vvector[10240];
 
     int* bitvector;
+    SelectObject** selects;
+    int numSelects;
     
     // Other necessary fields
 } ThreadArgs;

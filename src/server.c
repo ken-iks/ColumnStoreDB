@@ -105,7 +105,7 @@ void handle_client(void* client_socket_arg) {
                 client_context = NULL;
                 shutdown = true;
                 done = 1;
-                break;
+                //break;
             } 
             
 
@@ -143,10 +143,6 @@ void handle_client(void* client_socket_arg) {
     log_info("Connection closed at socket %d!\n", client_socket);
     close(client_socket);
     pthread_exit(NULL);
-    if (shutdown == true) {
-        deallocate(variable_pool);
-        exit(0);
-    }
 }
 
 /**
