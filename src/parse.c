@@ -172,7 +172,13 @@ int removenode(CatalogEntry** current, CatalogEntry** temp, CatalogEntry** previ
 
 int sync_col(CatalogEntry* col) {
     if (col->is_column != NULL && col->is_column == true) {
-		int rflag = msync(col->data, col->data_size, MS_SYNC);
+        int rflag;
+        if (col->in_cluster == false) {
+		    rflag = msync(col->data, col->data_size, MS_SYNC);
+        }
+        else {
+            rflag = msync(col->data2, col->data_size, MS_SYNC);
+        }
 		if(rflag == -1) {
             perror("Unable to msync.\n");
             return -1;
@@ -182,9 +188,15 @@ int sync_col(CatalogEntry* col) {
             perror("Unable to munmap.\n");
             return -1;
         }
+        rflag = munmap(col->data2, col->data_size);
+        if(rflag == -1) {
+            perror("Unable to munmap.\n");
+            return -1;
+        }
         return 0;
     }
     return -1; 
+    
 }
 
 // HELPER FUNCTION TO AVOID MEMORY LEAKS
@@ -277,19 +289,148 @@ CatalogEntry* line_to_entry(char* line, int line_num){
     return cat;
 }
 
+// Helper function for indexing
+/**
+ * Given array of sorted data, number of items
+ * in array, and a val to find, lookup correct pos for val.
+ **/
+
+int binary_search_with_offset(char* sorted_data, int num_items, char* val, int* offset) {
+
+    char** lines = malloc(num_items * sizeof(char*));
+    int* offsets = malloc(num_items * sizeof(int));
+    int line_index = 0;
+    char* line = strtok(sorted_data, "\n");
+    int current_offset = 0;
+
+    while (line != NULL) {
+        lines[line_index] = line;
+        offsets[line_index] = current_offset;
+        current_offset += strlen(line) + 1; // +1 for the newline character
+        line = strtok(NULL, "\n");
+        line_index++;
+    }
+
+    int first = 0, last = num_items - 1, middle;
+    *offset = -1; // Initialize offset to -1
+
+    while (first <= last) {
+        middle = (first + last) / 2;
+        int cmp = strncmp(lines[middle], val, strlen(val));
+        
+        if (cmp < 0) {
+            first = middle + 1;
+        } else if (cmp == 0) {
+            *offset = offsets[middle];
+            break;
+        } else {
+            last = middle - 1;
+        }
+    }
+
+    if (*offset == -1) { // if not found
+        *offset = (first < num_items) ? offsets[first] : current_offset;
+    }
+
+    free(lines);
+    free(offsets);
+
+    return (middle < num_items && strcmp(lines[middle], val) == 0) ? middle : first;
+}
+
+/**
+ * Inserts a string val and a newline character into an existing char* data at a specific position (pos).
+ * Assumes data has enough space to accommodate the new string and newline character.
+ * Returns true if insertion is successful, false otherwise.
+ */
+bool insert_at_pos_inplace(char* data, int data_max_len, int pos, char* val) {
+    int data_len = strlen(data);
+    int val_len = strlen(val);
+
+    // Check if there's enough space to insert val and a newline character
+    if (data_len + val_len + 1 >= data_max_len) { // +1 for the newline character
+        return false; // Not enough space
+    }
+
+    // Move the existing characters to make room for val and the newline character
+    memmove(data + pos + val_len + 1, data + pos, data_len - pos + 1); // +1 to include the null terminator
+
+    // Insert val
+    memcpy(data + pos, val, val_len);
+
+    // Insert newline character after val
+    data[pos + val_len] = '\n';
+
+    return true;
+}
+
+/**
+ * Given array of sorted data, number of items
+ * in array, and a val to find, lookup correct pos for val.
+ **/
+int binary_search(int* sorted_data, int num_items, int val) {    
+    if (!num_items) {
+        return 0;
+    }
+
+    int first = 0;
+    int last = num_items - 1;
+    int middle = last / 2;
+
+    while (first <= last) {
+        if (sorted_data[middle] < val) {
+            first = middle + 1;
+        } else if (sorted_data[middle] == val) {
+            // make sure at first instance of item
+            while (sorted_data[middle - 1] == val && middle > 0) {
+                middle--;
+            }
+            return middle;
+        } else {
+            last = middle - 1;
+        }
+
+        middle = (first + last) / 2;
+    }
+
+    if (sorted_data[middle] < val) {
+        return middle + 1;
+    }
+    return middle;
+}
+
+/**
+ * Given array of data, number of items
+ * in array, a val to insert, and a position to
+ * insert at, insert at that position;
+ **/
+void insert_at_pos(int* data, int num_items, int pos, int val) {
+    if (num_items) {
+        // move everything past pos over
+        for (int i = num_items + 1; i > pos; i--) {
+            data[i] = data[i - 1];
+        }
+    }
+
+    // insert new val at pos
+    data[pos] = val;
+}
+
+
+
 // Adds an element with filename = db.tbl.cl to correct file granted that cl exists in catalog
 // Primarily used in 'load'
 int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_pool) {
+    // get column from variable pool
     CatalogEntry* this_table = get(variable_pool, filename);
     if (!this_table) {
-        //perror("Error retriving column");
         fprintf(stderr, "Error retriving column: %s", filename);
         return -1;
+        // potentially add a case where you open the file and add (basically column is not in cache)
     }
 
     // Check for collisions
     while (this_table != NULL && this_table->filepath == NULL || strcmp(this_table->filepath, filename) != 0) {
-        //fprintf(stdout, "%s\n", (this_table)->filepath);
         this_table = this_table->next;
     }
 
@@ -298,25 +439,50 @@ int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_p
         return -1;
     }
 
+    /*
+
+    int* insert_pos = NULL;
+    int offset;
+
+
+
     // NOW ADD THE CHAR* TO THE END OF THE MEMORY MAPPED FILE
+    if (this_table->has_index = true) {
+        Index* id = this_table->indexes[0];
+        if (id->type == SORTED_CLUSTERED || id->type == BTREE_CLUSTERED) {
+        // get insert position
+            //int res = binary_search_with_offset(this_table->data, this_table->num_lines, val, &offset);
+            int res = binary_search(id->data, id->num_items, atoi(val));
+            insert_pos = res;
+        }
+        if (insert_pos != NULL) {
+            Index* id = this_table->indexes[0];
+            insert_at_pos(id->data, id->num_items, insert_pos, atoi(val));
+        }
+
+    }
+    */
 
     char* line = malloc(1024);
     strcpy(line, val);
     strcat(line, "\n");
-
-    //fprintf(stdout, "LINE: %s\n", line);
-
     strcat(this_table->data, line);
+    this_table->num_lines++;
+    this_table->offset += strlen(line);
+    free(line);
 
-    //fprintf(stdout, "DATA: %s\n", this_table->data);
-    
-    /*
+    //else {
 
-    fprintf(file, "%s\n", val);
+        /*
+        if (insert_at_pos_inplace(this_table->data, this_table->data_size, insert_pos, val)) {
+        printf("Modified data:\n");
+        } 
+        else {
+        printf("Not enough space to insert.\n");
+        }
+        */
+   // }
 
-    */
-
-   free(line);
 
     return 0;
 }
@@ -403,12 +569,14 @@ CatalogHashtable* populate_catalog(FILE* file) {
     return ht;
 }
 
+
+
 /**
  * This method takes in a string representing the arguments to create a column.
  * It parses those arguments, checks that they are valid, and creates a column - both in the catalog, and a physical file.
  */
 
-DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool) {
+DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool, ClientContext* context) {
     message_status status = OK_DONE;
     char** create_arguments_index = &create_arguments;
     char* column_name = next_token(create_arguments_index, &status);
@@ -486,10 +654,18 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
     // Use data[] as an array here, e.g., writing column name at the start
     snprintf(data, line_size, "COL NAME: %s\n", column_name);
 
-    // ... Additional operations on data[] ...
+    // Calculate the length of the written line
+    int written_length = strnlen(data, line_size);
 
-    close(fd);
+    // Initialize the rest of the file with null values
+    memset(data + written_length, '\0', full_size - written_length);
 
+    int* data2 = mmap(NULL, full_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data2 == MAP_FAILED) {
+        perror("Error mapping file");
+        close(fd);
+        return NULL;
+    }
 
     // add memory mapped column to catalogue
 
@@ -500,10 +676,31 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
     //cat->data = malloc(full_size * sizeof(char));
     //strcpy(cat->data, data);
     cat->data = data;
+    cat->data2 = data2;
     cat->data_size = full_size;
     cat->is_column = true;
+    cat->has_index = false;
+    cat->num_lines = 1;
+    cat->offset = strlen(data);
 
     put(variable_pool, *cat);
+
+    char* table_path = makePath(table_name, _TABLE);
+    Tb* curr_table = NULL;
+    for (int i=0; i<context->num_tables; i++) {
+        curr_table = context->tables[i];
+        if (strcmp(curr_table->path, table_path) == 0) {
+            curr_table->columns[curr_table->col_count] = cat;
+            curr_table->col_count++;
+            break;
+        }
+    }
+
+    if (curr_table == NULL) {
+        perror("Couldnt find table");
+        return NULL;
+    }
+
 
     //fclose(file2);
     free(path);
@@ -523,7 +720,7 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
  **/
 
 
-DbOperator* parse_create_tbl(char* create_arguments) {
+DbOperator* parse_create_tbl(char* create_arguments, ClientContext* context) {
     message_status status = OK_DONE;
     char** create_arguments_index = &create_arguments;
     char* table_name = next_token(create_arguments_index, &status);
@@ -580,6 +777,18 @@ DbOperator* parse_create_tbl(char* create_arguments) {
 
     fprintf(file, "%s,%s,%s\n", table_name, path, "tb");
     fclose(file);
+
+    Tb* table_obj = (Tb*) calloc(1, sizeof(Tb));
+    table_obj->clustered = false;
+    table_obj->indexed = false;
+    table_obj->col_capacity = column_cnt;
+    table_obj->columns = calloc(column_cnt, sizeof(CatalogEntry));
+    table_obj->col_count=0;
+    strcpy(table_obj->name, path);
+    strcpy(table_obj->path, path);
+
+    context->tables[context->num_tables] = table_obj;
+    context->num_tables++;
 
     free(path);
 
@@ -726,10 +935,182 @@ char* makePath(char* name, CreateType t) {
     return path;
 }
 
+char* get_tb_from_col(char* original) {
+    char* last_dot = strrchr(original, '.');
+    if (last_dot != NULL) {
+        size_t length = last_dot - original;
+        char* extracted = malloc(length + 1); // +1 for null terminator
+        if (extracted) {
+            strncpy(extracted, original, length);
+            extracted[length] = '\0'; // Null terminate the string
+
+            return extracted;
+        } else {
+            perror("Failed to allocate memory");
+            return NULL;
+        }
+    } else {
+        printf("No '.' found in the string.\n");
+        return NULL;
+    }
+}
+
+DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool, ClientContext* context) {
+    // args needed 
+    char col_name[MAX_SIZE_NAME], index[strlen("sorted") + 1], clustered_arg[strlen("unclustered") + 1];
+    int num_args = sscanf(create_arguments, "%[^,],%[^,],%[^,]", col_name, index, clustered_arg);
+
+    // if didnt get all args
+    if (num_args != 3) {
+        perror("Incorrect number of args");
+        return NULL;
+    }
+
+    IndexType index_type = NONE;
+
+    // get index type 
+    if (strcmp(index, "sorted") == 0) {
+        if (strcmp(clustered_arg, "clustered") == 0) {
+            index_type = SORTED_CLUSTERED;
+        } else if (strcmp(clustered_arg, "unclustered") == 0) {
+            index_type = SORTED_UNCLUSTERED;
+        }
+    } else if (strcmp(index, "btree") == 0) {
+        if (strcmp(clustered_arg, "clustered") == 0) {
+            index_type = BTREE_CLUSTERED;
+        } else if (strcmp(clustered_arg, "unclustered") == 0) {
+            index_type = BTREE_UNCLUSTERED;
+        }
+    }
+
+    // if no index type, args are invalid
+    if (index_type == NONE) {
+        perror("No index type");
+        return NULL;
+    }
+
+    
+
+    char* tb_name = get_tb_from_col(col_name);
+    char* tb_path = makePath(tb_name, _TABLE);
+
+
+
+    // Make pathname, then update catalog
+    char* path = makePath(col_name, _COLUMN);
+
+    // Update table in context using table name
+    for (int i=0; i<context->num_tables; i++) {
+        Tb* curr_table = context->tables[i];
+        if (strcmp(curr_table->path, tb_path) == 0) {
+            curr_table->indexed = true;
+            if (index_type == BTREE_CLUSTERED || index_type == SORTED_CLUSTERED) {
+                curr_table->clustered = true;
+                strcpy(curr_table->sort_col_path, path);
+            }
+            break;
+        } 
+    }
+
+    if (!path) {
+        return NULL;
+    }
+
+    // Create actual files. And then create a memory mapped copy to add to the variable pool.
+    // If vpool has a full column object then the name/filepath will have a .txt
+
+    char ind_path = malloc(256);
+    strcpy(ind_path, "./idx");
+    strcat(ind_path, path+1);
+    strcat(ind_path, ".txt");
+    strcat(path, ".txt");
+    //strcat(path,".txt");
+
+    // Attempt to create the directory if it doesn't exist
+    if (mkdir("./idx", 0777) == -1) {
+        if (errno != EEXIST) {
+            // Handle the error if it's not because the directory already exists
+            perror("Error creating directory");
+            return 1;
+        }
+    }
+
+    int capacity = 10240; // No. of elements that the column can hold
+    int line_size = 1024; // Size of line
+    size_t full_size = capacity * line_size; // Total size for memory mapping
+
+    // Open the file with read and write permissions, create if it doesn't exist
+    int fd = open(ind_path, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
+        perror("Error opening file");
+        return NULL;
+    }
+
+    // Extend the file to the desired size
+    if (ftruncate(fd, full_size) == -1) {
+        perror("Error extending file size");
+        close(fd);
+        return NULL;
+    }
+
+
+    // Memory map the file
+    int* data = mmap(NULL, full_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        perror("Error mapping file");
+        close(fd);
+        return NULL;
+    }
+
+    close(fd);
+
+    // Create index object -> not sure of purpose yet
+
+    Index* index_obj = (Index*) calloc(1, sizeof(Index));
+    index_obj->data = data;
+    index_obj->type = index_type;
+    strcpy(index_obj->filepath, ind_path);
+
+    // add index to the column object (mainly need has index so i know to work with data2 or data1)
+    CatalogEntry* column = get(variable_pool, path);
+    if (column->has_index == false) {
+        column->indexes = (Index*) calloc(5, sizeof(Index));
+        column->indexes[0] = index_obj;
+        column->index_count = 1;
+        column-> index_capacity = 5;
+        column->has_index = true;
+    }
+    else {
+        if (column->index_count + 1 < column->index_capacity) {
+            column->indexes[column->index_count] = index_obj;
+            column->index_count++;
+        }
+        else {
+            Index* ind_copy = (Index*) realloc(column->indexes, column->index_capacity *2);
+            if (ind_copy == NULL) {
+                perror("Allocation failure");
+                return NULL;
+            } else {
+                column->indexes = ind_copy;
+            }
+            column->indexes[column->index_count] = index_obj;
+            column->index_count++;
+            column->index_capacity = column->index_capacity * 2;
+        }
+    }
+
+    //fclose(file2);
+    free(path);
+
+    // make create dbo for table
+    DbOperator* dbo = malloc(sizeof(DbOperator));
+    return dbo;
+}
+
 /**
  * parse_create parses a create statement and then passes the necessary arguments off to the next function
  **/
-DbOperator* parse_create(char* create_arguments, CatalogEntry* variable_pool) {
+DbOperator* parse_create(char* create_arguments, CatalogEntry* variable_pool, ClientContext* context) {
     message_status mes_status;
     DbOperator* dbo = NULL;
     char *tokenizer_copy, *to_free;
@@ -747,10 +1128,13 @@ DbOperator* parse_create(char* create_arguments, CatalogEntry* variable_pool) {
         if (strcmp(token, "db") == 0) {
             dbo = parse_create_db(tokenizer_copy);
         } else if (strcmp(token, "tbl") == 0) {
-            dbo = parse_create_tbl(tokenizer_copy);
+            dbo = parse_create_tbl(tokenizer_copy, context);
         } else if (strcmp(token, "col") == 0){
-            dbo = parse_create_col(tokenizer_copy, variable_pool);
-        } else {
+            dbo = parse_create_col(tokenizer_copy, variable_pool, context);
+        } else if (strcmp(token, "idx") == 0) {
+            dbo = parse_create_idx(tokenizer_copy, variable_pool, context);
+        }
+        else {
             mes_status = UNKNOWN_COMMAND;
         }
 
@@ -760,6 +1144,7 @@ DbOperator* parse_create(char* create_arguments, CatalogEntry* variable_pool) {
     free(to_free);
     return dbo;
 }
+
 // For 'insert'
 int add_element_to_file(char* fname, char* abspath, char* val, CatalogHashtable* variable_pool) {
     char *fullpath = malloc(100);
@@ -769,15 +1154,6 @@ int add_element_to_file(char* fname, char* abspath, char* val, CatalogHashtable*
 
     add_element_for_load(fullpath, val, variable_pool);
 
-    /*
-    FILE* file = fopen(fullpath, "a");
-    if (!file) {
-        perror("Error opening file");
-        return -1;
-        }
-    fprintf(file, "%s\n", val);
-    fclose(file);
-    */
     free(fullpath);
     return 0;
 }
@@ -789,7 +1165,7 @@ int add_element_to_file(char* fname, char* abspath, char* val, CatalogHashtable*
  * then passes these arguments to a database function to insert a row.
  **/
 
-DbOperator* parse_insert(char* query_command, message* send_message, CatalogHashtable* variable_pool) {
+DbOperator* parse_insert(char* query_command, message* send_message, CatalogHashtable* variable_pool, ClientContext* context) {
     //unsigned int columns_inserted = 0;
     char* token = NULL;
     // check for leading '('
@@ -804,117 +1180,72 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
         if (send_message->status == INCORRECT_FORMAT) {
             return NULL;
         }
-        /*
 
-        // find entry for this table in catalog
-        FILE* file = fopen("catalogue.txt", "r");
-        if (!file) {
-            // handle error, free catname and catpath
-            free(catpath);
-            return NULL;
-        }
-        CatalogHashtable* ht = populate_catalog(file);
-        fclose(file);
+        Tb* table_obj = NULL;
 
-        CatalogEntry* this_table = get(ht, catname);
-
-        if (!this_table) {
-            free(catpath);
-            return NULL;
-        }
-
-        // Check for collisions
-        while (strcmp((*this_table).filepath, catpath) != 0) {
-            this_table = this_table->next;
-        }
-
-        char* path = (*this_table).filepath;
-        */
-
-        char* path = catpath;
-
-        // find paths of columns within this table
-        struct dirent *entry;
-        DIR *dir = opendir(path);
-
-        if (dir == NULL) {
-            perror("Unable to open directory");
-            return NULL;
-        }
-
-        while ((entry = readdir(dir)) != NULL) {
-            // Check if the entry is a regular file -> need to account for final ')' at some point
-            if (entry->d_type == DT_REG) {
-                token = strsep(command_index, ",");
-                if (strchr(token, ')')) {
-                    *strchr(token, ')') = '\0';
-                }
-                add_element_to_file(entry->d_name, path, token, variable_pool);
+        for (int i=0; i<context->num_tables; i++) {
+            Tb* tab = context->tables[i];
+            if (strcmp(tab->path, catpath) == 0) {
+                table_obj = tab;
+                break;
             }
         }
-        free(catpath);
-        closedir(dir);
 
-        DbOperator* dbo = malloc(sizeof(DbOperator));
- 
-        return dbo;
-    } else {
-        send_message->status = UNKNOWN_COMMAND;
-        return NULL;
-    }
-}
-
-// char* get_array(char* filepath, )
-
-DbOperator* parse_load_insert(char* query_command, message* send_message, CatalogHashtable* variable_pool, ClientContext* context) {
-
-    // IF WE ARE ALREADY IN A LOAD, just run the add function with colname (txt will be added) and value
-
-    // IF WE ARE NOT IN A LOAD, MEMORY MAP THE RELAVENT FILES? Then do regular thing?
-
-    // FOR NOW, WE ASSUME THAT A LOAD WILL FOLLOW A CREATE COLUMN AND SO OUR COLUMN WILl BE IN VPOOL
-
-    char* token = NULL;
-    // check for leading '('
-    if (strncmp(query_command, "(", 1) == 0) {
-        query_command++;
-        char** command_index = &query_command;
-        // parse table input
-        char* table_name = next_token(command_index, &send_message->status);
-        char* val = next_token(command_index, &send_message->status);
-        val = trim_parenthesis(val);
-        char* catpath = makePath(table_name, _TABLE);
-        strcat(catpath, ".txt");
-        
-
-        if (send_message->status == INCORRECT_FORMAT) {
+        if (table_obj == NULL) {
+            perror("Error getting table for insert");
             return NULL;
         }
 
-        // find entry for this table in catalog
-        FILE* file = fopen("catalogue.txt", "r");
-        if (!file) {
-            // handle error, free catname and catpath
+
+
+        char* val = token;
+        int insert_pos = NULL; //num lines starts at 1 :(
+
+        // CURRENTLY, IF DATA IS CLUSTERED, I AM WORKING WITH INT* DATA2, IF NOT, CHAR* DATA
+
+        if (table_obj->clustered == true) {
+            fprintf(stdout, "DIFFERENT\n");
+            CatalogEntry* target_col = get(variable_pool, table_obj->sort_col_path);
+            if (target_col == NULL) {
+                perror("Error getting table for insert");
+                return NULL;
+            }
+            // get add position from this, and then add to each other in that position!! :)
+            insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(val));
+            if (insert_pos == NULL) {
+                perror("Binary search error");
+                return NULL;
+            }
+            for (int i=0; i<table_obj->col_capacity; i++) {
+                CatalogEntry* current_col = table_obj->columns[i];
+                insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(val));
+                current_col->num_lines++;
+            } 
+        }
+        else {
+            fprintf(stdout, "NORMAL\n");
+            char* path = catpath;
+            // find paths of columns within this table
+            struct dirent *entry;
+            DIR *dir = opendir(path);
+
+            if (dir == NULL) {
+                perror("Unable to open directory");
+                return NULL;
+            }
+            while ((entry = readdir(dir)) != NULL) {
+                // Check if the entry is a regular file -> need to account for final ')' at some point
+                if (entry->d_type == DT_REG) {
+                    token = strsep(command_index, ",");
+                    if (strchr(token, ')')) {
+                        *strchr(token, ')') = '\0';
+                    }
+                    add_element_to_file(entry->d_name, path, token, variable_pool);
+                }
+            }
             free(catpath);
-            return NULL;
+            closedir(dir);
         }
-
-        fclose(file);
-
-        CatalogEntry* this_table = get(variable_pool, catpath);
-
-        if (!this_table) {
-            free(catpath);
-            fprintf(stdout, "COULDT FIND COLUMN!!\n");
-            return NULL;
-        }
-
-        // Check for collisions
-        while (strcmp((*this_table).filepath, catpath) != 0) {
-            this_table = this_table->next;
-        }
-
-        add_element_for_load(catpath, val, variable_pool);
 
         DbOperator* dbo = malloc(sizeof(DbOperator));
  
@@ -950,24 +1281,7 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         // Dealing with column
         char* name = getName(arg1);
         char* catpath = makePath(arg1, _COLUMN);
-        /*
-        // retrieve filename from catalog
-        FILE* file1 = fopen("catalogue.txt", "r");
-        CatalogHashtable* ht = populate_catalog(file1);
-        CatalogEntry* this_table = get(ht, name);
 
-        // Check for collisions
-        while (strcmp((*this_table).filepath, catpath) != 0) {
-            this_table = this_table->next;
-        }
-
-        if (!this_table) {
-            //perror("Error retriving column");
-            fprintf(stderr, "Error retriving column: %s", name);
-            return NULL;
-        }
-        char* fullpath = (*this_table).filepath;
-        */
         char* fullpath = catpath;
         strcat(fullpath, ".txt");
         // open column file
@@ -2358,47 +2672,6 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
 
 // TODO: MILESTONE 2 BATCHING QUERIES!!!
 
-// Initializes the queue.
-
-void queue_init(Queue* queue) {
-    node_t* dummy = malloc(sizeof(node_t));
-    dummy->next = NULL;
-    queue->head = queue->tail = dummy;
-    pthread_mutex_init(&queue->mutex, NULL);
-    pthread_cond_init(&queue->cond, NULL);
-}
-
-// Push a new query to the queue.
-void queue_push(Queue* queue, SelectObject query) {
-    node_t* new_node = malloc(sizeof(node_t));
-    if (new_node == NULL) {
-        exit(1); // handle memory allocation failure
-    }
-    new_node->query = query;
-    new_node->next = NULL;
-
-    pthread_mutex_lock(&queue->mutex);
-    queue->tail->next = new_node;
-    queue->tail = new_node;
-    pthread_cond_signal(&queue->cond);
-    pthread_mutex_unlock(&queue->mutex);
-}
-
-// Pop a query from the queue. This call is blocking.
-SelectObject queue_pop(Queue* queue) {
-    pthread_mutex_lock(&queue->mutex);
-    while (queue->head == queue->tail) {
-        // Wait until the queue is non-empty.
-        pthread_cond_wait(&queue->cond, &queue->mutex);
-    }
-    node_t* old_head = queue->head;
-    node_t* new_head = old_head->next;
-    SelectObject query = new_head->query; // this is the actual "data" being popped
-    queue->head = new_head;
-    pthread_mutex_unlock(&queue->mutex);
-    free(old_head);
-    return query;
-}
 
 // Helper functions for batch processing
 
@@ -2763,7 +3036,7 @@ Queue* batch_queue) {
     // check what command is given. 
     if (strncmp(query_command, "create", 6) == 0) {
         query_command += 6;
-        dbo = parse_create(query_command, variable_pool);
+        dbo = parse_create(query_command, variable_pool, context);
         if(dbo == NULL){
             send_message->status = INCORRECT_FORMAT;
         }
@@ -2772,10 +3045,7 @@ Queue* batch_queue) {
         }
     } else if (strncmp(query_command, "relational_insert", 17) == 0) {
         query_command += 17;
-        dbo = parse_insert(query_command, send_message, variable_pool);
-    } else if (strncmp(query_command, "load_insert", 11) == 0) {
-        query_command += 17;
-        dbo = parse_load_insert(query_command, send_message, variable_pool, context);
+        dbo = parse_insert(query_command, send_message, variable_pool, context);
     } else if (handle != NULL && (strncmp(query_command, "select", 6) == 0)) {
         query_command += 6;
         if (context->is_batch) {

@@ -66,6 +66,9 @@ void handle_client(void* client_socket_arg) {
     client_context->is_batch = false;
     client_context->multithread = true;
     client_context->num_selects = 0;
+    client_context->num_tables=0;
+
+    //client_context->db_set = false;
     
 
     // create variable pool for a given client

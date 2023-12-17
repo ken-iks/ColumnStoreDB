@@ -11,7 +11,7 @@ ABS_TEST_DIR=/cs165/$REL_TEST_DIR
 
 STUDENT_OUTPUT_DIR=/cs165/student_outputs
 
-DATA_SIZE=10000
+DATA_SIZE=1000000
 RAND_SEED=42
 
 # create milestone 1 data

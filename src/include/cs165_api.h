@@ -36,33 +36,24 @@ SOFTWARE.
 #define MAX_SIZE_NAME 64
 #define HANDLE_MAX_SIZE 64
 
-/**
- * EXTRA
- * DataType
- * Flag to mark what type of data is held in the struct.
- * You can support additional types by including this enum and using void*
- * in place of int* in db_operator simliar to the way IndexType supports
- * additional types.
- **/
+typedef enum IndexType {
+    NONE,
+    BTREE_CLUSTERED,
+    BTREE_UNCLUSTERED,
+    SORTED_CLUSTERED,
+    SORTED_UNCLUSTERED
+} IndexType;
 
-typedef enum DataType {
-     INT,
-     LONG,
-     FLOAT
-} DataType;
-
-struct Comparator;
-//struct ColumnIndex;
 
 typedef struct Column {
-    char name[MAX_SIZE_NAME]; 
+    char name[MAX_SIZE_NAME];
+    char path[MAX_SIZE_NAME]; 
     int* data;
     // You will implement column indexes later. 
-    void* index;
-    //struct ColumnIndex *index;
-    //bool clustered;
+    IndexType index;
+    int data_size; //keep track of how much space you used to allocate data incase you need to reallocate
+    int count; //dunno how i will even keep track of entry count but maybe
 } Column;
-
 
 /**
  * table
@@ -80,10 +71,14 @@ typedef struct Column {
 
 typedef struct Table {
     char name [MAX_SIZE_NAME];
-    Column *columns;
+    char path[MAX_SIZE_NAME]; 
+    //CatalogEntry** columns;
     size_t col_count;
     size_t table_length;
+    char sort_col_name [MAX_SIZE_NAME];
+    size_t sort_col_index;
 } Table;
+
 
 /**
  * db
@@ -95,16 +90,14 @@ typedef struct Table {
  **/
 
 typedef struct Db {
-    char name[MAX_SIZE_NAME]; 
+    char name[MAX_SIZE_NAME];
+    char path[MAX_SIZE_NAME]; 
     Table *tables;
     size_t tables_size;
     size_t tables_capacity;
 } Db;
 
-typedef struct IndexEntry {
-    char* path;
-    long offset;
-} IndexEntry;
+
 
 /**
  * Error codes used to indicate the outcome of an API call
@@ -122,57 +115,7 @@ typedef struct Status {
     char* error_message;
 } Status;
 
-// Defines a comparator flag between two values.
-typedef enum ComparatorType {
-    NO_COMPARISON = 0,
-    LESS_THAN = 1,
-    GREATER_THAN = 2,
-    EQUAL = 4,
-    LESS_THAN_OR_EQUAL = 5,
-    GREATER_THAN_OR_EQUAL = 6
-} ComparatorType;
 
-/*
- * Declares the type of a result column, 
- which includes the number of tuples in the result, the data type of the result, and a pointer to the result data
- */
-typedef struct Result {
-    size_t num_tuples;
-    DataType data_type;
-    void *payload;
-} Result;
-
-/*
- * an enum which allows us to differentiate between columns and results
- */
-typedef enum GeneralizedColumnType {
-    RESULT,
-    COLUMN
-} GeneralizedColumnType;
-/*
- * a union type holding either a column or a result struct
- */
-typedef union GeneralizedColumnPointer {
-    Result* result;
-    Column* column;
-} GeneralizedColumnPointer;
-
-/*
- * unifying type holding either a column or a result
- */
-typedef struct GeneralizedColumn {
-    GeneralizedColumnType column_type;
-    GeneralizedColumnPointer column_pointer;
-} GeneralizedColumn;
-
-/*
- * used to refer to a column in our client context
- */
-
-typedef struct GeneralizedColumnHandle {
-    char name[HANDLE_MAX_SIZE];
-    GeneralizedColumn generalized_column;
-} GeneralizedColumnHandle;
 /*
  * holds the information necessary to refer to generalized columns (results or columns)
  */
@@ -186,31 +129,10 @@ typedef struct SelectObject{
     pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
 } SelectObject;
 
-typedef struct ClientContext {
-    // So we can know whether or not we are within a batch query
-    bool is_batch;
-    char batch_identifier[MAX_SIZE_NAME];
-    SelectObject* selects[100];
-    int num_selects;
-    // For loading -> to be persisted upon shutdown
-    //char* cols_in_vpool[2040];
-    bool multithread;
-    
-} ClientContext;
 
 
-/**
- * comparator
- * A comparator defines a comparison operation over a column. 
- **/
-typedef struct Comparator {
-    long int p_low; // used in equality and ranges.
-    long int p_high; // used in range compares. 
-    GeneralizedColumn* gen_col;
-    ComparatorType type1;
-    ComparatorType type2;
-    char* handle;
-} Comparator;
+
+
 
 /*
  * tells the databaase what type of operator this is
@@ -271,14 +193,7 @@ typedef union OperatorFields {
  * client_fd: the file descriptor of the client that this operator will return to
  * context: the context of the operator in question. This context holds the local results of the client in question.
  */
-typedef struct DbOperator {
-    OperatorType type;
-    OperatorFields operator_fields;
-    int client_fd;
-    ClientContext* context;
-} DbOperator;
 
-extern Db *current_db;
 
 typedef struct {
     int startLine;
@@ -300,6 +215,12 @@ typedef struct {
     // Other necessary fields
 } ThreadArgs;
 
+typedef struct Index {
+    char filepath[MAX_SIZE_NAME];
+    IndexType type;
+    int* data;
+    int num_items;
+} Index;
 
 
 // CODE FOR HASHTABLE IMPLEMENTATION OF CATALOG -> also used for variable pool
@@ -314,8 +235,17 @@ typedef struct CatalogEntry {
     bool in_vpool;
     int bitvector[10240]; // For variable pool
     bool is_column;
+    Index** indexes;
+    bool has_index;
+    bool in_cluster;
+    int index_count;
+    int index_capacity;
     char* data; // This will point to the memory-mapped file or a string
+    int* data2;
     size_t data_size; // Size of the data
+    int num_lines;
+    int num_entries; // for int* implementation
+    int offset;
     bool has_value;
     float value; // For arithmetic operators
 } CatalogEntry;
@@ -323,6 +253,41 @@ typedef struct CatalogEntry {
 typedef struct CatalogHashtable {
     CatalogEntry* table[5003]; // An array of pointers to entries
 } CatalogHashtable;
+
+typedef struct Tb {
+    char name [MAX_SIZE_NAME];
+    char path[MAX_SIZE_NAME]; 
+    CatalogEntry** columns;
+    size_t col_count;
+    size_t col_capacity;
+    bool indexed;
+    bool clustered;
+    char sort_col_path[MAX_SIZE_NAME];
+    int* sort_col_data;
+} Tb;
+
+typedef struct ClientContext {
+    Tb* tables[100];
+    int num_tables;
+    // So we can know whether or not we are within a batch query
+    bool is_batch;
+    char batch_identifier[MAX_SIZE_NAME];
+    SelectObject* selects[100];
+    int num_selects;
+    // For loading -> to be persisted upon shutdown
+    //char* cols_in_vpool[2040];
+    bool multithread;
+    
+} ClientContext;
+
+typedef struct DbOperator {
+    OperatorType type;
+    OperatorFields operator_fields;
+    int client_fd;
+    ClientContext* context;
+} DbOperator;
+
+extern Db *current_db;
 
 
 // QUEUE IS FOR MULTIPLE CORE USE

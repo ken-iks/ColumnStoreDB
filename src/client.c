@@ -137,29 +137,6 @@ message handleLoadQuery(char* query, int socket) {
     message send_message;
     send_message.status = 0;
 
-    /*
-
-    char *headerTokens[100];
-    int index = 0;
-    //loop through first line to get headers
-    if (fgets(line, sizeof(line), fp)) {
-        // strip newline 
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') {
-            line[len - 1] = '\0';
-        }
-        // populate headertokens array
-        fprintf(stdout, "This is line:%s", line);
-        char *token, *stringp, *tofree;
-        tofree = stringp = strdup(line);
-        while ((token = strsep(&stringp, ",")) != NULL) {
-            headerTokens[index] = strdup(token);
-            index++;
-        }
-        free(tofree);
-    }
-    */
-
     
 
     // read database/table/column
@@ -218,38 +195,6 @@ message handleLoadQuery(char* query, int socket) {
         receiveMessage(socket);
     }
 
-    /*
-
-    //loop through rest of the lines
-    while (fgets(line, sizeof(line), fp)) {
-        char *lineTokens[100];
-        int lineIndex = 0;
-
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') {
-            line[len - 1] = '\0';
-        }
-
-        char *token, *stringp, *tofree;
-        tofree = stringp = strdup(line);
-        while ((token = strsep(&stringp, ",")) != NULL) {
-            if (headerTokens[lineIndex] != NULL && token != NULL) {
-                char query_insert[1024];
-                sprintf(query_insert, "load_insert(%s,%s)", headerTokens[lineIndex], strdup(token));
-                send_message.length = strlen(query_insert);
-                send_message.payload = query_insert;
-                sendMessage(send_message, socket); 
-                receiveMessage(socket);
-            }
-            //lineTokens[lineIndex] = token;
-            lineIndex++;
-        }
-        free(tofree);
-    }
-    */
-
-    //free(col_name);
-    //free(table_name);
     fclose(fp);
 }
 
