@@ -30,6 +30,7 @@
 #include <pthread.h>
 #define MAX_LINE_SIZE 1024
 #define DELIMITER ","
+#define START_CAPACITY 10240
 
 #define MAX_THREADS 4
 #define TASK_QUEUE_SIZE 10
@@ -289,6 +290,26 @@ CatalogEntry* line_to_entry(char* line, int line_num){
     return cat;
 }
 
+char* get_tb_from_col(char* original) {
+    char* last_dot = strrchr(original, '.');
+    if (last_dot != NULL) {
+        size_t length = last_dot - original;
+        char* extracted = malloc(length + 1); // +1 for null terminator
+        if (extracted) {
+            strncpy(extracted, original, length);
+            extracted[length] = '\0'; // Null terminate the string
+
+            return extracted;
+        } else {
+            perror("Failed to allocate memory");
+            return NULL;
+        }
+    } else {
+        printf("No '.' found in the string.\n");
+        return NULL;
+    }
+}
+
 // Helper function for indexing
 /**
  * Given array of sorted data, number of items
@@ -466,9 +487,56 @@ int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_p
     char* line = malloc(1024);
     strcpy(line, val);
     strcat(line, "\n");
-    strcat(this_table->data, line);
-    this_table->num_lines++;
     this_table->offset += strlen(line);
+    this_table->num_lines++;
+
+    if (this_table->offset < this_table->data_size) {
+        //printf("We here?\n");
+        strcat(this_table->data, line);
+    }
+    else {
+        //printf("OR WE HERE?\n");
+        int rflag = msync(this_table->data, this_table->data_size, MS_SYNC);
+		if(rflag == -1) {
+            perror("Unable to msync.\n");
+            return -1;
+		}
+		rflag = munmap(this_table->data, this_table->data_size);
+        if(rflag == -1) {
+            perror("Unable to munmap.\n");
+            return -1;
+        }
+        this_table->data_size*=2;
+        // Open the file with read and write permissions, create if it doesn't exist
+        int fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+        if (fd == -1) {
+            perror("Error opening file");
+            return NULL;
+        }
+
+        // Extend the file to the desired size
+        if (ftruncate(fd, this_table->data_size) == -1) {
+            perror("Error extending file size");
+            close(fd);
+            return NULL;
+        }
+
+        // Memory map the file
+        char* datacopy = mmap(NULL, this_table->data_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (datacopy == MAP_FAILED) {
+            perror("Error mapping file");
+            close(fd);
+            return NULL;
+        }
+        this_table->data = datacopy;
+        strcat(this_table->data, line);
+    }
+
+
+
+    //strcat(this_table->data, line);
+    //this_table->num_lines++;
+    //this_table->offset += strlen(line);
     free(line);
 
     //else {
@@ -707,10 +775,6 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
 
     // make create dbo for table
     DbOperator* dbo = malloc(sizeof(DbOperator));
-    dbo->type = CREATE;
-    dbo->operator_fields.create_operator.create_type = _COLUMN;
-    strcpy(dbo->operator_fields.create_operator.name, column_name);
-    dbo->operator_fields.create_operator.db = current_db;
     return dbo;
 }
 
@@ -794,11 +858,6 @@ DbOperator* parse_create_tbl(char* create_arguments, ClientContext* context) {
 
     // make create dbo for table
     DbOperator* dbo = malloc(sizeof(DbOperator));
-    dbo->type = CREATE;
-    dbo->operator_fields.create_operator.create_type = _TABLE;
-    strcpy(dbo->operator_fields.create_operator.name, table_name);
-    dbo->operator_fields.create_operator.db = current_db;
-    dbo->operator_fields.create_operator.col_count = column_cnt;
     return dbo;
 }
 
@@ -935,25 +994,6 @@ char* makePath(char* name, CreateType t) {
     return path;
 }
 
-char* get_tb_from_col(char* original) {
-    char* last_dot = strrchr(original, '.');
-    if (last_dot != NULL) {
-        size_t length = last_dot - original;
-        char* extracted = malloc(length + 1); // +1 for null terminator
-        if (extracted) {
-            strncpy(extracted, original, length);
-            extracted[length] = '\0'; // Null terminate the string
-
-            return extracted;
-        } else {
-            perror("Failed to allocate memory");
-            return NULL;
-        }
-    } else {
-        printf("No '.' found in the string.\n");
-        return NULL;
-    }
-}
 
 DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool, ClientContext* context) {
     // args needed 
@@ -1324,6 +1364,8 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         }
         strcpy(cat->name, handle);
         
+        cat->bitv_capacity = START_CAPACITY * sizeof(int);
+        cat->bitvector = (int*) malloc(cat->bitv_capacity);
 
 
         int count = 0;
@@ -1350,7 +1392,20 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
                 fprintf(stdout, "%i IS NOT between %i and %i", lineval, ilow, ihigh);
                 val = INT_MIN;
             }
-            cat->bitvector[count] = val;
+            if (count * sizeof(int) < cat->bitv_capacity) {
+                cat->bitvector[count] = val;
+            }
+            else {
+                int* bitvcopy = (int*) realloc(cat->bitvector, cat->bitv_capacity *2);
+                cat->bitv_capacity*=2;
+                if (bitvcopy == NULL) {
+                    perror("Allocation failure");
+                    return NULL;
+                } else {
+                    cat->bitvector = bitvcopy;
+                    cat->bitvector[count] = val;
+                    }
+            }
             count++;
 
         }
@@ -1390,6 +1445,9 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         }
         strcpy(cat->name, handle);
         cat->size = size;
+        cat->bitv_capacity = size * sizeof(int);
+        cat->bitvector = (int*) malloc(cat->bitv_capacity);
+
 
         // assume that both vectors are the same size (one is treated as a bit vector and one as val vector)
         for (int i=0; i<size; i++) {
@@ -1568,14 +1626,31 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
         }
         */
         int lineCount = 0;
-        long *lineOffsets = malloc(sizeof(long) * 102400);
+        int offset_capacity = sizeof(long) * 102400;
+        long *lineOffsets = (long*)malloc(offset_capacity);
         long currentOffset = 0;
         // Count lines
         while (fgets(line, sizeof(line), file)) {
             if (strncmp(line, "\0", 1) == 0) {
                 break;
             }
-            lineOffsets[lineCount] = currentOffset;
+            if (lineCount*sizeof(long) < offset_capacity) {
+                //fprintf(stdout, "Lets see %i. Offset capacity is %i \n", lineCount*sizeof(long), offset_capacity);
+                lineOffsets[lineCount] = currentOffset;
+            }
+            else {
+                //fprintf(stdout, "OKAY TOO BIG \n");
+                long* offsetscopy = (long*) realloc(lineOffsets, offset_capacity *2);
+                offset_capacity*=2;
+                if (offsetscopy == NULL) {
+                    perror("Allocation failure");
+                    return NULL;
+                } else {
+                    lineOffsets = offsetscopy;
+                    lineOffsets[lineCount] = currentOffset;
+                }
+            }
+            
             //fprintf(stdout, "LINE OFFSET NUMBER: %i is at offset %i, and has val %s", lineCount, currentOffset, line);
             currentOffset = ftell(file);
             lineCount++;
@@ -1620,6 +1695,8 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
 
         // Wait for threads and aggregate results
         int* finalBitvector = malloc(lineCount * sizeof(int));
+        cat->bitv_capacity = lineCount * sizeof(int);
+        cat->bitvector = malloc(lineCount * sizeof(int));
         int finalIndex = 0;
         for (int i = 0; i < threadCount; ++i) {
             pthread_join(threads[i], NULL);
@@ -1730,6 +1807,8 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
 
         // Wait for threads and aggregate results
         int* finalBitvector = malloc(count * sizeof(int));
+        cat->bitv_capacity = count * sizeof(int);
+        cat->bitvector = malloc(cat->bitv_capacity);
         int finalIndex = 0;
         for (int i = 0; i < threadCount; ++i) {
             pthread_join(threads[i], NULL);
@@ -1833,6 +1912,8 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
         return NULL;
     }
     strcpy(cat->name, handle);
+    cat->bitv_capacity = START_CAPACITY * sizeof(int);
+    cat->bitvector = (int*) malloc(cat->bitv_capacity);
 
     int count = 0;
     // Now loop through each subsequent line
@@ -1848,15 +1929,36 @@ DbOperator* parse_fetch(char* query_command, char* handle, message* send_message
             line[len - 1] = '\0';
         }
         int lineval = atoi(line);
-        
-        // Now 'line' contains the current line from the file without the newline character
-        if (pvector->bitvector[count] != INT_MIN) {
-            //fprintf(stdout, "THIS IS!!! IN THE SET\n");
-            cat->bitvector[count] = lineval;
+
+        if (count * sizeof(int) < cat->bitv_capacity) {
+            // Now 'line' contains the current line from the file without the newline character
+            if (pvector->bitvector[count] != INT_MIN) {
+                //fprintf(stdout, "THIS IS!!! IN THE SET\n");
+                cat->bitvector[count] = lineval;
+            }
+            else {
+                cat->bitvector[count] = INT_MIN;
+                //fprintf(stdout, "THIS IS NOT! IN THE SET\n");
+            }
         }
         else {
-            cat->bitvector[count] = INT_MIN;
-            //fprintf(stdout, "THIS IS NOT! IN THE SET\n");
+            int* bitvcopy = (int*) realloc(cat->bitvector, cat->bitv_capacity *2);
+            cat->bitv_capacity*=2;
+            if (bitvcopy == NULL) {
+                perror("Allocation failure");
+                return NULL;
+            } else {
+                cat->bitvector = bitvcopy;
+                // Now 'line' contains the current line from the file without the newline character
+                if (pvector->bitvector[count] != INT_MIN) {
+                    //fprintf(stdout, "THIS IS!!! IN THE SET\n");
+                    cat->bitvector[count] = lineval;
+                }
+                else {
+                    cat->bitvector[count] = INT_MIN;
+                    //fprintf(stdout, "THIS IS NOT! IN THE SET\n");
+                }
+            }
         }
         count++;
     }
@@ -2369,6 +2471,8 @@ DbOperator* parse_max(char* query_command, char* handle, message* send_message, 
             perror("Failed to allocate memory for CatalogEntry");
             return NULL;
         }
+        positionlist->bitv_capacity = sizeof(int) * count;
+        positionlist->bitvector = (int*) malloc(positionlist->bitv_capacity);
 
         // Find pos of all max values -> TODO: Technically this is searching through too many values in the second case
         for (int i=0; i < count; i++) {
@@ -2540,6 +2644,8 @@ DbOperator* parse_min(char* query_command, char* handle, message* send_message, 
             perror("Failed to allocate memory for CatalogEntry");
             return NULL;
         }
+        positionlist->bitv_capacity = sizeof(int) * count;
+        positionlist->bitvector = (int*) malloc(positionlist->bitv_capacity);
 
         // Find pos of all min values -> TODO: Technically this is searching through too many values in the second case
         for (int i=0; i < count; i++) {
@@ -2603,6 +2709,8 @@ DbOperator* parse_add(char* query_command, char* handle, message* send_message, 
     }
 
     int count = vvector1->size;
+    retvector->bitv_capacity = sizeof(int) * count;
+    retvector->bitvector = (int*) malloc(retvector->bitv_capacity);
 
     for (int i=0; i<count; i++) {
         if ((vvector1->bitvector[i]) != INT_MIN && (vvector2->bitvector[i]) != INT_MIN 
@@ -2649,6 +2757,8 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
     }
 
     int count = vvector1->size;
+    retvector->bitv_capacity = sizeof(int) * count;
+    retvector->bitvector = (int*) malloc(retvector->bitv_capacity);
 
     for (int i=0; i<count; i++) {
         if ((vvector1->bitvector[i]) != INT_MIN && (vvector2->bitvector[i]) != INT_MIN 
@@ -2693,6 +2803,8 @@ DbOperator* batch_select_add(char* query_command, char* handle, message* send_me
     char** command_index = &query_command;
 
     SelectObject* retselect = (SelectObject*) malloc(sizeof(SelectObject));
+    retselect->results_capacity = START_CAPACITY * sizeof(int);
+    retselect->results = malloc(retselect->results_capacity);
 
     // parse table input. Assuming this is a column name
     char* arg1 = next_token(command_index, &send_message->status);
@@ -2787,17 +2899,30 @@ DbOperator* parse_batch_execute(char* query_command, message* send_message, Cata
             else {
                 val = INT_MIN;
             }
-            context->selects[i]->results[count] = val;
-
+            if (count * sizeof(int) < context->selects[i]->results_capacity) {
+                context->selects[i]->results[count] = val;
+            }
+            else {
+                int* rescopy = (int*) realloc(context->selects[i]->results, context->selects[i]->results_capacity*2);
+                context->selects[i]->results_capacity*=2;
+                if (rescopy == NULL) {
+                    perror("Allocation failure");
+                    return NULL;
+                } else {
+                    context->selects[i]->results = rescopy;
+                    context->selects[i]->results[count] = val;
+                }
+            }
         }
         count++;
-        printf("%i", count);
     }
         
 
     for (int i=0; i<context->num_selects; i++) {
         SelectObject* obj_in_question = context->selects[i];
         CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+        cat->bitv_capacity = count * sizeof(int);
+        cat->bitvector = (int*) malloc(cat->bitv_capacity);
         if (!cat) {
             perror("Failed to allocate memory for CatalogEntry");
             return NULL;
@@ -2863,7 +2988,19 @@ void* threadFunction2(void* arg) {
             for (int j = 0; j < threadArgs->numSelects; j++) {
                 SelectObject* select = threadArgs->selects[j];
                 int val = (lineval >= select->minval && lineval < select->maxval) ? INT_MAX : INT_MIN;
-                select->results[currentLine] = val; // Store result; ensure this array is pre-allocated
+                if (currentLine * sizeof(int) < select->results_capacity) {
+                    select->results[currentLine] = val; // Store result; ensure this array is pre-allocated
+                } else {
+                    int* rescopy = (int*) realloc(select->results, select->results_capacity*2);
+                    select->results_capacity*=2;
+                    if (rescopy == NULL) {
+                        perror("Allocation failure");
+                        return NULL;
+                    } else {
+                        select->results = rescopy;
+                        select->results[currentLine] = val;
+                    }
+                }
             }
             currentLine++;
             if (file == NULL) {
@@ -2918,14 +3055,28 @@ DbOperator* parse_batch_execute_multithread(char* query_command, message* send_m
     }
     char line[1024];
     int lineCount = 0;
-    long *lineOffsets = malloc(sizeof(long) * 102400);
+    int offset_capacity = sizeof(long) * 102400;
+    long *lineOffsets = (long*)malloc(offset_capacity);
     long currentOffset = 0;
     // Count lines
     while (fgets(line, sizeof(line), file)) {
         if (strncmp(line, "\0", 1) == 0) {
             break;
         }
-        lineOffsets[lineCount] = currentOffset;
+        if (lineCount < offset_capacity) {
+            lineOffsets[lineCount] = currentOffset;
+        }
+        else {
+            long* offsetscopy = (int*) realloc(lineOffsets, offset_capacity *2);
+            if (offsetscopy == NULL) {
+                perror("Allocation failure");
+                return NULL;
+            } else {
+                lineOffsets = offsetscopy;
+                lineOffsets[lineCount] = currentOffset;
+                offset_capacity*=2;
+            }
+        }
         //fprintf(stdout, "LINE OFFSET NUMBER: %i is at offset %i, and has val %s", lineCount, currentOffset, line);
         currentOffset = ftell(file);
         lineCount++;
@@ -2975,6 +3126,8 @@ DbOperator* parse_batch_execute_multithread(char* query_command, message* send_m
             perror("Failed to allocate memory for CatalogEntry");
             return NULL;
         }
+        cat->bitv_capacity = lineCount * sizeof(int);
+        cat->bitvector = (int*) malloc(cat->bitv_capacity);
         strcpy(cat->name, obj_in_question->handle);
         cat->size = lineCount;
         for (int j=0; j<lineCount; j++) {

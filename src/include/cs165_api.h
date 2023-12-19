@@ -36,6 +36,8 @@ SOFTWARE.
 #define MAX_SIZE_NAME 64
 #define HANDLE_MAX_SIZE 64
 
+
+
 typedef enum IndexType {
     NONE,
     BTREE_CLUSTERED,
@@ -125,12 +127,10 @@ typedef struct SelectObject{
     char handle[MAX_SIZE_NAME];
     int minval; // Starting index of the scan.
     int maxval; // Ending index of the scan.
-    int results[10240]; // to store results
+    int* results; // to store results
+    int results_capacity;
     pthread_mutex_t* mutex; // Mutex for shared resources, like writing to the results array.
 } SelectObject;
-
-
-
 
 
 
@@ -233,7 +233,8 @@ typedef struct CatalogEntry {
     int line; // which line this entry is on the catalog
     struct CatalogEntry *next;  // In case of collisions, we use chaining
     bool in_vpool;
-    int bitvector[10240]; // For variable pool
+    int* bitvector; // For variable pool
+    int bitv_capacity;
     bool is_column;
     Index** indexes;
     bool has_index;
@@ -272,7 +273,7 @@ typedef struct ClientContext {
     // So we can know whether or not we are within a batch query
     bool is_batch;
     char batch_identifier[MAX_SIZE_NAME];
-    SelectObject* selects[100];
+    SelectObject* selects[1000];
     int num_selects;
     // For loading -> to be persisted upon shutdown
     //char* cols_in_vpool[2040];
@@ -312,6 +313,7 @@ typedef struct Queue {
  * Use this command to see if databases that were persisted start up properly. If files
  * don't load as expected, this can return an error. 
  */
+
 Status db_startup();
 
 Status create_db(const char* db_name);
