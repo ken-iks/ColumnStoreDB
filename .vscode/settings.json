@@ -10,6 +10,13 @@
         "memory": "c",
         "string": "c",
         "unordered_map": "c",
-        "vector": "c"
+        "vector": "c",
+        "array": "c",
+        "bitset": "c",
+        "initializer_list": "c",
+        "iterator": "c",
+        "random": "c",
+        "string_view": "c",
+        "utility": "c"
     }
 }

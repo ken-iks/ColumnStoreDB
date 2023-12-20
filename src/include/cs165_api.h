@@ -36,6 +36,10 @@ SOFTWARE.
 #define MAX_SIZE_NAME 64
 #define HANDLE_MAX_SIZE 64
 
+// define fanout of btree so that each node fits on one page (4096 bytes)
+#define FANOUT 340
+#define LEAF_SIZE 508
+
 
 
 typedef enum IndexType {
@@ -219,8 +223,45 @@ typedef struct Index {
     char filepath[MAX_SIZE_NAME];
     IndexType type;
     int* data;
+    int* positions;
     int num_items;
 } Index;
+
+typedef struct BPTreeNode BPTreeNode;
+
+typedef struct BPTreeInternalNode {
+    struct BPTreeNode* pointers[FANOUT];    // array of pointers to other nodes
+    int vals[FANOUT - 1];                   // array of keys 
+} BPTreeInternalNode;
+
+
+typedef struct BPTreeLeafNode {
+    int vals[LEAF_SIZE];         // array of values 
+    int positions[LEAF_SIZE];    // array of corresponding positions in base data
+    
+    struct BPTreeNode* next;     // pointer to next leaf
+    struct BPTreeNode* prev;     // pointer to previous leaf
+} BPTreeLeafNode;
+
+
+typedef union BPTreeNodeType {
+    BPTreeInternalNode internal_node;
+    BPTreeLeafNode leaf_node;
+} BPTreeNodeType;
+
+
+struct BPTreeNode {
+    int is_leaf;                  // bool for leaf
+    int num_vals;                 // number of vals stored
+    BPTreeNodeType type;          // leaf or internal
+    struct BPTreeNode* parent;    // pointer to parent node
+};
+
+typedef struct LeafIndexRes {
+    BPTreeNode* leaf_node;
+    int index;
+} LeafIndexRes;
+
 
 
 // CODE FOR HASHTABLE IMPLEMENTATION OF CATALOG -> also used for variable pool
@@ -264,7 +305,7 @@ typedef struct Tb {
     bool indexed;
     bool clustered;
     char sort_col_path[MAX_SIZE_NAME];
-    int* sort_col_data;
+    int sort_col_index;
 } Tb;
 
 typedef struct ClientContext {

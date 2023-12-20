@@ -16,6 +16,7 @@
 #include "parse.h"
 #include "utils.h"
 #include "client_context.h"
+#include "bplus.h"
 
 
 #include <stdio.h>
@@ -36,6 +37,8 @@
 #define TASK_QUEUE_SIZE 10
 
 char* makePath(char* name, CreateType t);
+int binary_search(int* sorted_data, int num_items, int val);
+void insert_at_pos(int* data, int num_items, int pos, int val);
 
 
 /**
@@ -171,7 +174,274 @@ int removenode(CatalogEntry** current, CatalogEntry** temp, CatalogEntry** previ
     return 0;
 }
 
+typedef struct {
+    int value;
+    int originalPosition;
+} ValuePositionPair;
+
+void swap(ValuePositionPair* a, ValuePositionPair* b) {
+    ValuePositionPair t = *a;
+    *a = *b;
+    *b = t;
+}
+
+int partition(ValuePositionPair arr[], int low, int high) {
+    int pivot = arr[high].value; // Pivot
+    int i = (low - 1); // Index of smaller element
+
+    for (int j = low; j <= high - 1; j++) {
+        // If current element is smaller than or equal to pivot
+        if (arr[j].value <= pivot) {
+            i++; // Increment index of smaller element
+            swap(&arr[i], &arr[j]);
+        }
+    }
+    swap(&arr[i + 1], &arr[high]);
+    return (i + 1);
+}
+
+void quickSort(ValuePositionPair arr[], int low, int high) {
+    if (low < high) {
+        // Partitioning index
+        int pi = partition(arr, low, high);
+
+        // Recursively sort elements before and after partition
+        quickSort(arr, low, pi - 1);
+        quickSort(arr, pi + 1, high);
+    }
+}
+
+ValuePositionPair* sort_newline_separated_ints(char* data, int* num_items) {
+    // Count the number of integers, skipping the first line
+    *num_items = -1; // Start from -1 to skip the first line
+    for (int i = 0; data[i] != '\0'; i++) {
+        if (data[i] == '\n') (*num_items)++;
+    }
+    if (*num_items <= 0) return NULL; // No data to sort
+
+    // Allocate an array to store the ValuePositionPair
+    ValuePositionPair* pairs = malloc((*num_items) * sizeof(ValuePositionPair));
+    if (!pairs) {
+        perror("Malloc failed");
+        return NULL;
+    }
+
+    // Skip the first line
+    char* rest = strchr(data, '\n');
+    if (!rest) {
+        free(pairs);
+        return NULL; // No newline found, invalid data
+    }
+    rest++; // Move past the newline character
+
+    // Tokenize the string and convert to integers
+    char* line;
+    int idx = 0;
+    while ((line = strsep(&rest, "\n")) != NULL) {
+        pairs[idx].value = atoi(line);
+        pairs[idx].originalPosition = idx;
+        idx++;
+    }
+
+    // Sort the array of ValuePositionPair using quickSort
+    quickSort(pairs, 0, *num_items - 1);
+
+    return pairs;
+}
+
+// basically just the previous function without the quicksort
+int* string_to_intarr(char* data) {
+    // Count the number of integers, skipping the first line
+    int count = -1; // Start from -1 to skip the first line
+    for (int i = 0; data[i] != '\0'; i++) {
+        if (data[i] == '\n') count++;
+    }
+    if (count <= 0) return NULL; // No data to sort
+
+    // Allocate an array to store the integers
+    int* numbers = malloc(count * sizeof(int));
+    if (!numbers) {
+        perror("Malloc failed");
+        return NULL;
+    }
+
+    // Skip the first line
+    char* rest = strchr(data, '\n');
+    if (!rest) {
+        free(numbers);
+        return NULL; // No newline found, invalid data
+    }
+    rest++; // Move past the newline character
+
+    // Tokenize the string and convert to integers
+    char* line;
+    int idx = 0;
+    while ((line = strsep(&rest, "\n")) != NULL) {
+        numbers[idx++] = atoi(line);
+    }
+    return numbers;
+}
+
+void serializeIndex(const Index* index, const char* filename) {
+    FILE* file = fopen(filename, "wb");
+    if (file == NULL) {
+        perror("Error opening file for writing");
+        return;
+    }
+
+    // Write the non-pointer fields of the structure
+    fwrite(&index->filepath, sizeof(index->filepath), 1, file);
+    fwrite(&index->type, sizeof(index->type), 1, file);
+    fwrite(&index->num_items, sizeof(index->num_items), 1, file);
+
+    // Write the data and positions arrays
+    fwrite(index->data, sizeof(int), index->num_items, file);
+    fwrite(index->positions, sizeof(int), index->num_items, file);
+
+    fclose(file);
+}
+
+Index* deserializeIndex(FILE* file) {
+
+    Index* index = malloc(sizeof(Index));
+    if (index == NULL) {
+        perror("Memory allocation failed");
+        fclose(file);
+        return NULL;
+    }
+
+    // Read the non-pointer fields of the structure
+    fread(&index->filepath, sizeof(index->filepath), 1, file);
+    fread(&index->type, sizeof(index->type), 1, file);
+    fread(&index->num_items, sizeof(index->num_items), 1, file);
+
+    // Allocate memory and read the data and positions arrays
+    index->data = malloc(sizeof(int) * index->num_items);
+    index->positions = malloc(sizeof(int) * index->num_items);
+    if (index->data == NULL || index->positions == NULL) {
+        perror("Memory allocation failed");
+        free(index->data);    // Safely attempt to free allocated memory
+        free(index->positions);
+        free(index);
+        fclose(file);
+        return NULL;
+    }
+
+    fread(index->data, sizeof(int), index->num_items, file);
+    fread(index->positions, sizeof(int), index->num_items, file);
+
+    fclose(file);
+    return index;
+}
+
+// Function to take a column path and create an index path from it
+char* createIndexName(const char* colPath) {
+    if (colPath == NULL) {
+        return NULL;
+    }
+
+    const char* prefix = "./ind/";
+    const char* extension = ".bin";
+    const char* txtExtension = ".txt";
+    const int prefixLen = strlen(prefix);
+    const int extensionLen = strlen(extension);
+    int pathLen = strlen(colPath);
+    const int txtExtensionLen = strlen(txtExtension);
+    int i, j;
+
+    // Check if colPath ends with ".txt" and adjust pathLen
+    if (pathLen > txtExtensionLen && strcmp(colPath + pathLen - txtExtensionLen, txtExtension) == 0) {
+        pathLen -= txtExtensionLen;
+    }
+
+    // Allocate memory for the new index path with the extension
+    char* indexPath = malloc(prefixLen + pathLen - 1 + extensionLen + 1); // +1 for null-terminator
+    if (indexPath == NULL) {
+        perror("Memory allocation failed");
+        return NULL;
+    }
+
+    // Copy prefix to the new index path
+    strcpy(indexPath, prefix);
+
+    // Start from character after "./" in colPath and replace '/' with '_'
+    for (i = 2, j = prefixLen; i < pathLen; ++i, ++j) {
+        indexPath[j] = (colPath[i] == '/') ? '_' : colPath[i];
+    }
+
+    // Append the extension
+    strcpy(indexPath + j, extension);
+
+    return indexPath;
+}
+
+/*
+
+    // Example usage
+    // Create an index and serialize it
+    Index myIndex = { initialize fields };
+    serializeIndex(&myIndex, "index.bin");
+
+    // Deserialize the index
+    Index* loadedIndex = deserializeIndex("index.bin");
+    if (loadedIndex != NULL) {
+        // Use the loaded index
+        // ...
+
+        // Free the loaded index
+        free(loadedIndex->data);
+        free(loadedIndex->positions);
+        free(loadedIndex);
+    }
+
+*/
+
+
+
 int sync_col(CatalogEntry* col) {
+    if (col->has_index == true) {
+        Index* ind = col->indexes[0]; //assuming a max of one index per column FOR NOW
+
+        switch (ind->type) {
+            case BTREE_CLUSTERED:
+            case BTREE_UNCLUSTERED: {
+                int* dataset = string_to_intarr(col->data);
+                int dataset_size = col->num_lines * sizeof(int);
+
+                // Step 1: Create and populate the B+ Tree
+                BPTreeNode* root = NULL;
+                for (int i = 0; i < dataset_size; i++) {
+                    root = bplus_insert(root, dataset[i], dataset[i], 0);  // Assuming value and position are the same
+                }
+
+                // Step 2: Persist the B+ Tree to disk
+                FILE* fd = fopen(ind->filepath, "wb");
+                if (fd == NULL) {
+                    perror("Error opening file");
+                    return EXIT_FAILURE;
+                }
+                dump_bptree(fd, root, dataset); // Assuming 'dataset' is the base data
+                fclose(fd);
+                // Free the B+ Tree after dumping
+                free_node(root);
+                break;
+            }
+            case SORTED_UNCLUSTERED: {
+                int num_items;
+                ValuePositionPair* sorted = sort_newline_separated_ints(col->data, &num_items);
+                ind->data = calloc(num_items, sizeof(int));
+                ind->positions = calloc(num_items, sizeof(int));
+                for (int i=0; i<num_items; i++) {
+                    ind->data[i] = sorted[i].value;
+                    ind->positions[i] = sorted[i].originalPosition;
+                }
+                serializeIndex(ind, ind->filepath);
+                break;
+            }
+            default:
+                return NULL;
+        }
+    }
     if (col->is_column != NULL && col->is_column == true) {
         int rflag;
         if (col->in_cluster == false) {
@@ -317,22 +587,31 @@ char* get_tb_from_col(char* original) {
  **/
 
 int binary_search_with_offset(char* sorted_data, int num_items, char* val, int* offset) {
+    char* data_copy = strdup(sorted_data); // Make a copy because strsep modifies the string
+    if (!data_copy) return -1; // Memory allocation failed
 
     char** lines = malloc(num_items * sizeof(char*));
     int* offsets = malloc(num_items * sizeof(int));
+    if (!lines || !offsets) {
+        free(data_copy);
+        free(lines);
+        free(offsets);
+        return -1; // Memory allocation failed
+    }
+
+    char* rest = data_copy;
+    char* line;
     int line_index = 0;
-    char* line = strtok(sorted_data, "\n");
     int current_offset = 0;
 
-    while (line != NULL) {
+    while ((line = strsep(&rest, "\n")) != NULL) {
         lines[line_index] = line;
         offsets[line_index] = current_offset;
         current_offset += strlen(line) + 1; // +1 for the newline character
-        line = strtok(NULL, "\n");
         line_index++;
     }
 
-    int first = 0, last = num_items - 1, middle;
+    int first = 0, last = num_items - 1, middle = 0;
     *offset = -1; // Initialize offset to -1
 
     while (first <= last) {
@@ -353,10 +632,13 @@ int binary_search_with_offset(char* sorted_data, int num_items, char* val, int* 
         *offset = (first < num_items) ? offsets[first] : current_offset;
     }
 
+    int result = (middle < num_items && strcmp(lines[middle], val) == 0) ? middle : first;
+
+    free(data_copy);
     free(lines);
     free(offsets);
 
-    return (middle < num_items && strcmp(lines[middle], val) == 0) ? middle : first;
+    return result;
 }
 
 /**
@@ -420,6 +702,29 @@ int binary_search(int* sorted_data, int num_items, int val) {
     return middle;
 }
 
+/*
+* Binary search with a given range (used for multithreading)
+*/
+
+int binary_search_range(const int* arr, int start, int end, int target) {
+    int low = start;
+    int high = end - 1;
+
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (arr[mid] < target) {
+            low = mid + 1;
+        } else if (arr[mid] > target) {
+            high = mid - 1;
+        } else {
+            return mid; // Target found
+        }
+    }
+
+    // If target is not found, return the nearest position
+    return low;
+}
+
 /**
  * Given array of data, number of items
  * in array, a val to insert, and a position to
@@ -458,31 +763,7 @@ int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_p
     if (this_table == NULL || !(this_table->is_column)) {
         perror("Error retrieving correct column");
         return -1;
-    }
-
-    /*
-
-    int* insert_pos = NULL;
-    int offset;
-
-
-
-    // NOW ADD THE CHAR* TO THE END OF THE MEMORY MAPPED FILE
-    if (this_table->has_index = true) {
-        Index* id = this_table->indexes[0];
-        if (id->type == SORTED_CLUSTERED || id->type == BTREE_CLUSTERED) {
-        // get insert position
-            //int res = binary_search_with_offset(this_table->data, this_table->num_lines, val, &offset);
-            int res = binary_search(id->data, id->num_items, atoi(val));
-            insert_pos = res;
-        }
-        if (insert_pos != NULL) {
-            Index* id = this_table->indexes[0];
-            insert_at_pos(id->data, id->num_items, insert_pos, atoi(val));
-        }
-
-    }
-    */
+    } 
 
     char* line = malloc(1024);
     strcpy(line, val);
@@ -532,11 +813,6 @@ int add_element_for_load(char* filename, char* val, CatalogHashtable* variable_p
         strcat(this_table->data, line);
     }
 
-
-
-    //strcat(this_table->data, line);
-    //this_table->num_lines++;
-    //this_table->offset += strlen(line);
     free(line);
 
     //else {
@@ -1029,8 +1305,6 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
         return NULL;
     }
 
-    
-
     char* tb_name = get_tb_from_col(col_name);
     char* tb_path = makePath(tb_name, _TABLE);
 
@@ -1047,6 +1321,13 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
             if (index_type == BTREE_CLUSTERED || index_type == SORTED_CLUSTERED) {
                 curr_table->clustered = true;
                 strcpy(curr_table->sort_col_path, path);
+                for (int i=0; i<curr_table->col_count; i++) {
+                    CatalogEntry* col = curr_table->columns[i];
+                    if (strcmp(path, col->filepath) == 0) {
+                        curr_table->sort_col_index=i;
+                        break;
+                    }
+                }
             }
             break;
         } 
@@ -1059,12 +1340,7 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
     // Create actual files. And then create a memory mapped copy to add to the variable pool.
     // If vpool has a full column object then the name/filepath will have a .txt
 
-    char ind_path = malloc(256);
-    strcpy(ind_path, "./idx");
-    strcat(ind_path, path+1);
-    strcat(ind_path, ".txt");
-    strcat(path, ".txt");
-    //strcat(path,".txt");
+    char *ind_path = createIndexName(path);
 
     // Attempt to create the directory if it doesn't exist
     if (mkdir("./idx", 0777) == -1) {
@@ -1074,6 +1350,8 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
             return 1;
         }
     }
+
+    /*
 
     int capacity = 10240; // No. of elements that the column can hold
     int line_size = 1024; // Size of line
@@ -1104,10 +1382,12 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
 
     close(fd);
 
+    */
+
     // Create index object -> not sure of purpose yet
 
     Index* index_obj = (Index*) calloc(1, sizeof(Index));
-    index_obj->data = data;
+    //index_obj->data = data;
     index_obj->type = index_type;
     strcpy(index_obj->filepath, ind_path);
 
@@ -1198,6 +1478,64 @@ int add_element_to_file(char* fname, char* abspath, char* val, CatalogHashtable*
     return 0;
 }
 
+int get_offset_for_line(char* sorted_data, int line_number) {
+    if (line_number < 0) {
+        return -1; // Invalid line number
+    }
+
+    char* data_copy = strdup(sorted_data); // Make a copy because strsep modifies the string
+    if (!data_copy) return -1; // Memory allocation failed
+
+    char* rest = data_copy;
+    char* line;
+    int current_line = 0;
+    int offset = 0;
+
+    while ((line = strsep(&rest, "\n")) != NULL) {
+        if (current_line == line_number) {
+            int result = offset;
+            free(data_copy);
+            return result;
+        }
+
+        offset += strlen(line) + 1; // +1 for the newline character
+        current_line++;
+    }
+
+    free(data_copy);
+    return -1; // Line number not found
+}
+
+char* get_nth_string(const char* input, int n) {
+    // Copy the input string as strsep modifies the original string
+    char* input_copy = strdup(input);
+    if (input_copy == NULL) {
+        return NULL; // strdup failed
+    }
+
+    char* token;
+    char* rest = input_copy;
+    int count = 0;
+    char* result = NULL;
+
+    // Use strsep to split the string by commas
+    while ((token = strsep(&rest, ",")) != NULL) {
+        if (count == n) {
+            // Allocate memory for the result and copy the token
+            result = strdup(token);
+            break;
+        }
+        count++;
+    }
+
+    // Free the copied string
+    free(input_copy);
+
+    // Return the result (or NULL if not found)
+    return result;
+}
+
+
 
 
 /**
@@ -1236,10 +1574,10 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
             return NULL;
         }
 
-
-
         char* val = token;
         int insert_pos = NULL; //num lines starts at 1 :(
+        
+        char* valcopy = val;
 
         // CURRENTLY, IF DATA IS CLUSTERED, I AM WORKING WITH INT* DATA2, IF NOT, CHAR* DATA
 
@@ -1251,15 +1589,60 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
                 return NULL;
             }
             // get add position from this, and then add to each other in that position!! :)
-            insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(val));
-            if (insert_pos == NULL) {
+            char* ins_val = get_nth_string(token, table_obj->sort_col_index);
+            int offset;
+            int insert_line = binary_search_with_offset(target_col->data, target_col->num_lines, ins_val, &offset);
+            //insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(val));
+            if (insert_line == NULL) {
                 perror("Binary search error");
                 return NULL;
-            }
+            } 
             for (int i=0; i<table_obj->col_capacity; i++) {
                 CatalogEntry* current_col = table_obj->columns[i];
-                insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(val));
+
+                int insert_pos = get_offset_for_line(current_col->data, insert_line);
+                ins_val = get_nth_string(token,i);
                 current_col->num_lines++;
+                current_col->offset+=strlen(ins_val) + 1;
+                if (current_col->offset < current_col->data_size) {
+                    insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val); 
+                }
+                else {
+                    int rflag = msync(current_col->data, current_col->data_size, MS_SYNC);
+                    if(rflag == -1) {
+                        perror("Unable to msync.\n");
+                        return -1;
+                    }
+                    rflag = munmap(current_col->data, current_col->data_size);
+                    if(rflag == -1) {
+                        perror("Unable to munmap.\n");
+                        return -1;
+                    }
+                    current_col->data_size*=2;
+                    // Open the file with read and write permissions, create if it doesn't exist
+                    int fd = open(current_col->filepath, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+                    if (fd == -1) {
+                        perror("Error opening file");
+                        return NULL;
+                    }
+
+                    // Extend the file to the desired size
+                    if (ftruncate(fd, current_col->data_size) == -1) {
+                        perror("Error extending file size");
+                        close(fd);
+                        return NULL;
+                    }
+
+                    // Memory map the file
+                    char* datacopy = mmap(NULL, current_col->data_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                    if (datacopy == MAP_FAILED) {
+                        perror("Error mapping file");
+                        close(fd);
+                        return NULL;
+                    }
+                    current_col->data = datacopy;
+                    insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val);
+                }
             } 
         }
         else {
@@ -1296,7 +1679,18 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
     }
 }
 
+/*
 
+    // Step 3: Deserialize the B+ Tree when needed
+    fd = fopen("bptree.dat", "rb");
+    if (fd == NULL) {
+        perror("Error opening file");
+        return EXIT_FAILURE;
+    }
+    BPTreeNode* loaded_root = load_bptree(fd, dataset);
+    fclose(fd);
+
+*/
 
 
 
@@ -1346,6 +1740,8 @@ DbOperator* parse_select(char* query_command, char* handle, message* send_messag
         } else {
             ihigh = atoi(high);
         }
+
+
 
         char line[1024];
         // Skip the first line
@@ -1476,6 +1872,54 @@ MULTITHREADING THE SELECT
 void* threadFunction(void* arg) {
     ThreadArgs* threadArgs = (ThreadArgs*) arg;
     if (threadArgs->is_column == true) {
+        // Check if we can index the column
+        char* indexname = createIndexName(threadArgs->filepath);
+        FILE* indfile = fopen(indexname, "rb");
+        if (indfile != NULL) {
+            Index* index = deserializeIndex(indfile);
+            switch (index->type) {
+                case SORTED_UNCLUSTERED: {
+                    int size = index->num_items;
+                    int* values = index->data;
+                    int* positions = index->positions;
+                    int rangeSize = threadArgs->endLine - threadArgs->startLine;
+                    // startline-1 TO endline
+
+                    int pos_low = binary_search_range(values, threadArgs->startLine-1, threadArgs->endLine, threadArgs->ilow);
+                    int pos_high = binary_search_range(values, threadArgs->startLine-1, threadArgs->endLine, threadArgs->ihigh);
+
+                    // Set specific positions to INT_MAX
+                    for (int i = pos_low; i <= pos_high; i++) {
+                        if (positions[i] < size) {
+                            threadArgs->bitvector[positions[i]] = INT_MAX;
+                        }
+                    }
+                    break;
+                    
+                }
+                case SORTED_CLUSTERED: {
+                    int size = index->num_items;
+                    int* values = index->data;
+                    int* positions = index->positions;
+                    int rangeSize = threadArgs->endLine - threadArgs->startLine;
+                    // startline-1 TO endline
+
+                    int pos_low = binary_search_range(values, threadArgs->startLine-1, threadArgs->endLine, threadArgs->ilow);
+                    int pos_high = binary_search_range(values, threadArgs->startLine-1, threadArgs->endLine, threadArgs->ihigh);
+
+                    // Set specific positions to INT_MAX
+                    for (int i = pos_low; i <= pos_high; i++) {
+                        if (i < size) {
+                            threadArgs->bitvector[i] = INT_MAX;
+                        }
+                    }
+                    break;
+                    
+                }
+                default: break;
+            }
+            return NULL;
+        }
 
         // Open the file (consider thread-safe mechanisms or separate file pointers)
         FILE* file = fopen(threadArgs->filepath, "r");
@@ -1505,12 +1949,6 @@ void* threadFunction(void* arg) {
             }
             else {
 
-                //fprintf(stdout, "SELECT LINE IS: %s", line);
-                /*
-                if (strncmp(line, "\0", 1) == 0) {
-                    break;
-                }
-                */
                 // Remove the newline character, if present
                 size_t len = strlen(line);
                 if (len > 0 && line[len - 1] == '\n') {
@@ -1518,14 +1956,11 @@ void* threadFunction(void* arg) {
                 }
                 int lineval = atoi(line);
                 // Now 'line' contains the current line from the file without the newline character
-                // For our bitvector, false === INT_MIN and true === INT_MAX (this allows us to use the bitvector object for a value vector)
                 int val;
                 if (lineval < threadArgs->ihigh && lineval >= threadArgs->ilow) {
-                    //fprintf(stdout, "%i IS between %i and %i. So line %i is a YES!\n", lineval, threadArgs->ilow, threadArgs->ihigh, currentLine-1);
                     val = INT_MAX;
                 }
                 else {
-                    //fprintf(stdout, "%i IS NOT between %i and %i. So line %i is a NO!\n", lineval, threadArgs->ilow, threadArgs->ihigh, currentLine-1);
                     val = INT_MIN;
                 }
                 threadArgs->bitvector[currentLine-1] = val;
@@ -1558,12 +1993,12 @@ void* threadFunction(void* arg) {
         for (int i=threadArgs->startLine; i<threadArgs->endLine; i++) {
             int val;
             if (threadArgs->pvector[i] != INT_MIN && (threadArgs->vvector[i] > threadArgs->ilow && threadArgs->vvector[i] < threadArgs->ihigh)) {
-                fprintf(stdout, "%i IS between %i and %i. So line %i is a YES!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
+                //fprintf(stdout, "%i IS between %i and %i. So line %i is a YES!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
                 val = INT_MAX;
             }
             else {
                 val = INT_MIN;
-                fprintf(stdout, "%i IS NOT between %i and %i. So line %i is a NO!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
+                //fprintf(stdout, "%i IS NOT between %i and %i. So line %i is a NO!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
             }
             threadArgs->bitvector[i] = val;
         }
@@ -1593,12 +2028,6 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
         char* catpath = makePath(arg1, _COLUMN);
         char* fullpath = catpath;
         strcat(fullpath, ".txt");
-        // open column file
-        FILE* file = fopen(fullpath, "r");
-        if (!file) {
-            perror("Error opening file");
-            return NULL;
-            }
 
         char* low = next_token(command_index, &send_message->status);
         char* high = next_token(command_index, &send_message->status);
@@ -1615,6 +2044,82 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
         } else {
             ihigh = atoi(high);
         }
+
+        // Check if we can index the column
+        char* indexname = createIndexName(fullpath);
+        FILE* indfile = fopen(indexname, "rb");
+        if (indfile != NULL) {
+            Index* index = deserializeIndex(indfile);     
+            switch (index->type) {
+               case BTREE_CLUSTERED: {
+                    CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+                    if (!cat) {
+                        perror("Failed to allocate memory for CatalogEntry");
+                        return NULL;
+                    }
+
+                    // Wait for threads and aggregate results
+                    cat->bitv_capacity = index->num_items * sizeof(int);
+                    cat->bitvector = malloc(index->num_items * sizeof(int));
+                    strcpy(cat->name, handle);
+
+                    cat->size = index->num_items;
+                    cat->in_vpool = true;
+
+                    int* base_data;
+                    BPTreeNode* loaded_root = load_bptree(indfile, base_data);
+                    int pos_min = find_pos(loaded_root,ilow, 1);
+                    int pos_max = find_pos(loaded_root, ihigh, 0);
+                    int* retsel = malloc(sizeof(int) * index->num_items);
+                    memset(cat->bitvector, INT_MIN, (sizeof(int) * index->num_items));
+                    for (int i=pos_min; i<pos_max; i++) {
+                        cat->bitvector[i] = INT_MAX;
+                    }
+                    put(variable_pool, *cat);
+                    return NULL;
+                    break;
+                }
+                case BTREE_UNCLUSTERED: {
+                   CatalogEntry* cat = (CatalogEntry *) malloc(sizeof(CatalogEntry));
+                    if (!cat) {
+                        perror("Failed to allocate memory for CatalogEntry");
+                        return NULL;
+                    }
+
+                    // Wait for threads and aggregate results
+                    cat->bitv_capacity = index->num_items * sizeof(int);
+                    cat->bitvector = malloc(index->num_items * sizeof(int));
+                    strcpy(cat->name, handle);
+
+                    cat->size = index->num_items;
+                    cat->in_vpool = true;
+
+                    int num_results;
+                    int* ret_indices = malloc(sizeof(int) * index->num_items);
+
+                    int* base_data;
+                    BPTreeNode* loaded_root = load_bptree(indfile, base_data);
+                    // get resulting positions
+                    find_pos_range(loaded_root, &num_results, &ret_indices, &ilow, &ihigh);
+                    memset(cat->bitvector, INT_MIN, (sizeof(int) * index->num_items));
+                    for (int i=0; i<num_results; i++) {
+                        cat->bitvector[ret_indices[i]] = INT_MAX;
+                    }
+                    put(variable_pool, *cat);
+                    return NULL;
+                    break;
+                }
+                default: break;
+            }
+            
+        }
+
+       // open column file
+        FILE* file = fopen(fullpath, "r");
+        if (!file) {
+            perror("Error opening file");
+            return NULL;
+            }
 
         char line[1024];
         // Skip the first line
@@ -1679,6 +2184,8 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
             args[i].ihigh = ihigh;
             args[i].ilow = ilow;
             args[i].bitvector = malloc((lineOffsets[nums[i+1]] - lineOffsets[nums[i]]) * sizeof(int));
+            // Initialize the array with INT_MIN using memset
+            memset(args[i].bitvector, INT_MIN, (lineOffsets[nums[i+1]] - lineOffsets[nums[i]]) * sizeof(int));
             // Initialize other necessary fields
 
             // Create the thread
@@ -1722,19 +2229,6 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
 
 
         strcpy(cat->name, handle);
-        /*
-        fprintf(stdout, "THIS IS THE FINAL BITVECTOR:\n");
-        for (int i=0; i<lineCount; i++) {
-            if (finalBitvector[i] == INT_MAX) {
-                fprintf(stdout, "Line %i is a YES\n", i);
-                cat->bitvector[i] = INT_MAX;
-            }
-            else {
-                fprintf(stdout, "Line %i is a NO\n", i);
-                cat->bitvector[i] = INT_MIN;
-            }
-        }
-        */
 
         cat->size = lineCount;
         cat->in_vpool = true;
