@@ -489,6 +489,7 @@ int sync_col(CatalogEntry* col) {
             }
         }
         else {
+            printf("Num lines: %i for %s \n", col->num_lines, col->filepath);
             // in cluster so working with data2
             char* values = intarr_to_string(col->data2, col->num_lines);
             strcat(col->data, values);
@@ -1062,6 +1063,7 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
     cat->has_index = false;
     cat->num_lines = 1;
     cat->offset = strlen(data);
+    cat->in_cluster = false;
 
     put(variable_pool, *cat);
 
@@ -1359,9 +1361,12 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
                 strcpy(curr_table->sort_col_path, path);
                 for (int i=0; i<curr_table->col_count; i++) {
                     CatalogEntry* col = curr_table->columns[i];
+                    //curr_table->columns[i]->in_cluster = true;
+                    col->in_cluster = true;
+                    erase(variable_pool, col->name);
+                    put(variable_pool, *col);
                     if (strcmp(curr_table->sort_col_path, col->filepath) == 0) {
                         curr_table->sort_col_index=i;
-                        break;
                     }
                 }
             }
@@ -1581,7 +1586,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
         }
 
         char* val = token;
-        int insert_pos = NULL; //num lines starts at 1 :(
+        //int insert_pos = NULL; //num lines starts at 1 :(
         
 
         // CURRENTLY, IF DATA IS CLUSTERED, TRY TO WORK WITH DATA2 - THEN PUT INTO DATA1 AS CHAR*
@@ -1598,13 +1603,14 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
             // get add position from this, and then add to each other in that position!! :)
             char* ins_val = get_nth_string(token, table_obj->sort_col_index);
             //int insert_line = binary_search_insert_position(target_col->data, target_col->num_lines, ins_val);
-            insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(ins_val));
-            if (insert_pos == NULL) {
-                perror("Binary search error for binary search with offset");
+            int insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(ins_val));
+            if (insert_pos < 0) {
+                perror("Binary search error for binary search");
                 return NULL;
             } 
             for (int i=0; i<table_obj->col_capacity; i++) {
-                CatalogEntry* current_col = table_obj->columns[i];
+                CatalogEntry* current_colt = table_obj->columns[i];
+                CatalogEntry* current_col = get(variable_pool, current_colt->filepath);
    
                 //int insert_pos = get_offset_for_line(current_col->data, insert_line);
                 ins_val = get_nth_string(token,i);
@@ -1612,7 +1618,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
                 current_col->offset+=strlen(ins_val) + 1;
                 if (current_col->offset < current_col->data_size) {
                     if (current_col->num_lines*sizeof(int) < current_col->data2_size) {
-                        insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                        insert_at_pos(current_col->data2, current_col->num_lines-2, insert_pos, atoi(ins_val));
                     }
                     else {
                         int* data2copy = (int*) realloc(current_col->data2, current_col->data2_size *2);
@@ -1622,7 +1628,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
                             return NULL;
                         } else {
                             current_col->data2 = data2copy;
-                            insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                            insert_at_pos(current_col->data2, current_col->num_lines-2, insert_pos, atoi(ins_val));
                             }
                     }
                     //insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val); 
@@ -1663,7 +1669,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
                     current_col->data = datacopy;
                     //insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val);
                     if (current_col->num_lines*sizeof(int) < current_col->data2_size) {
-                        insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                        insert_at_pos(current_col->data2, current_col->num_lines-2, insert_pos, atoi(ins_val));
                     }
                     else {
                         int* data2copy = (int*) realloc(current_col->data2, current_col->data2_size *2);
@@ -1673,7 +1679,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
                             return NULL;
                         } else {
                             current_col->data2 = data2copy;
-                            insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                            insert_at_pos(current_col->data2, current_col->num_lines-2, insert_pos, atoi(ins_val));
                             }
                     }
                 }
