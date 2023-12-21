@@ -282,6 +282,35 @@ int* string_to_intarr(char* data) {
     return numbers;
 }
 
+/**
+ * Converts an array of integers to a newline-separated char* string.
+ *
+ * @param numbers Array of integers to be converted.
+ * @param count Number of elements in the array.
+ * @return A dynamically allocated string containing the numbers, separated by newlines.
+ */
+char* intarr_to_string(int* numbers, int count) {
+    // Estimate the required length: assume max 12 characters per number (including '\n')
+    int estimated_length = count * 12 + 1; // +1 for the null terminator
+    char* result = malloc(estimated_length);
+    if (!result) {
+        perror("Malloc failed");
+        return NULL;
+    }
+
+    // Start with an empty string
+    result[0] = '\0';
+
+    // Convert each integer to string and append
+    for (int i = 0; i < count; i++) {
+        char num_str[12]; // Large enough for an int and '\n'
+        sprintf(num_str, "%d\n", numbers[i]);
+        strcat(result, num_str);
+    }
+
+    return result;
+}
+
 void serializeIndex(const Index* index, const char* filename) {
     FILE* file = fopen(filename, "wb");
     if (file == NULL) {
@@ -401,69 +430,81 @@ char* createIndexName(const char* colPath) {
 int sync_col(CatalogEntry* col) {
     if (col->has_index == true) {
         Index* ind = col->indexes[0]; //assuming a max of one index per column FOR NOW
+        if (ind->type != SORTED_CLUSTERED) {
+            switch (ind->type) {
+                case BTREE_CLUSTERED:
+                case BTREE_UNCLUSTERED: {
+                    int* dataset = string_to_intarr(col->data);
+                    int dataset_size = (col->num_lines-1) * sizeof(int);
 
-        switch (ind->type) {
-            case BTREE_CLUSTERED:
-            case BTREE_UNCLUSTERED: {
-                int* dataset = string_to_intarr(col->data);
-                int dataset_size = col->num_lines * sizeof(int);
+                    // Step 1: Create and populate the B+ Tree
+                    BPTreeNode* root = NULL;
+                    for (int i = 0; i < dataset_size; i++) {
+                        root = bplus_insert(root, dataset[i], i, 0);  // Assuming value and position are the same
+                    }
 
-                // Step 1: Create and populate the B+ Tree
-                BPTreeNode* root = NULL;
-                for (int i = 0; i < dataset_size; i++) {
-                    root = bplus_insert(root, dataset[i], dataset[i], 0);  // Assuming value and position are the same
+                    // Step 2: Persist the B+ Tree to disk
+                    FILE* fd = fopen(ind->filepath, "wb");
+                    if (fd == NULL) {
+                        perror("Error opening file");
+                        return EXIT_FAILURE;
+                    }
+                    dump_bptree(fd, root, dataset); // Assuming 'dataset' is the base data
+                    fclose(fd);
+                    // Free the B+ Tree after dumping
+                    free_node(root);
+                    break;
                 }
-
-                // Step 2: Persist the B+ Tree to disk
-                FILE* fd = fopen(ind->filepath, "wb");
-                if (fd == NULL) {
-                    perror("Error opening file");
-                    return EXIT_FAILURE;
+                case SORTED_UNCLUSTERED: {
+                    int num_items;
+                    ValuePositionPair* sorted = sort_newline_separated_ints(col->data, &num_items);
+                    ind->data = calloc(num_items, sizeof(int));
+                    ind->positions = calloc(num_items, sizeof(int));
+                    for (int i=0; i<num_items; i++) {
+                        ind->data[i] = sorted[i].value;
+                        ind->positions[i] = sorted[i].originalPosition;
+                    }
+                    serializeIndex(ind, ind->filepath);
+                    break;
                 }
-                dump_bptree(fd, root, dataset); // Assuming 'dataset' is the base data
-                fclose(fd);
-                // Free the B+ Tree after dumping
-                free_node(root);
-                break;
+                default:
+                    return NULL;
             }
-            case SORTED_UNCLUSTERED: {
-                int num_items;
-                ValuePositionPair* sorted = sort_newline_separated_ints(col->data, &num_items);
-                ind->data = calloc(num_items, sizeof(int));
-                ind->positions = calloc(num_items, sizeof(int));
-                for (int i=0; i<num_items; i++) {
-                    ind->data[i] = sorted[i].value;
-                    ind->positions[i] = sorted[i].originalPosition;
-                }
-                serializeIndex(ind, ind->filepath);
-                break;
-            }
-            default:
-                return NULL;
         }
     }
     if (col->is_column != NULL && col->is_column == true) {
         int rflag;
+        
         if (col->in_cluster == false) {
-		    rflag = msync(col->data, col->data_size, MS_SYNC);
+            // should have been added to data as regular
+            rflag = msync(col->data, col->data_size, MS_SYNC);
+            if(rflag == -1) {
+                perror("Unable to msync.\n");
+                return -1;
+            }
+            rflag = munmap(col->data, col->data_size);
+            if(rflag == -1) {
+                perror("Unable to munmap.\n");
+                return -1;
+            }
         }
         else {
-            rflag = msync(col->data2, col->data_size, MS_SYNC);
+            // in cluster so working with data2
+            char* values = intarr_to_string(col->data2, col->num_lines);
+            strcat(col->data, values);
+            rflag = msync(col->data, col->data_size, MS_SYNC);
+            if(rflag == -1) {
+                perror("Unable to msync.\n");
+                return -1;
+            }
+            rflag = munmap(col->data, col->data_size);
+            if(rflag == -1) {
+                perror("Unable to munmap.\n");
+                return -1;
+            }
         }
-		if(rflag == -1) {
-            perror("Unable to msync.\n");
-            return -1;
-		}
-		rflag = munmap(col->data, col->data_size);
-        if(rflag == -1) {
-            perror("Unable to munmap.\n");
-            return -1;
-        }
-        rflag = munmap(col->data2, col->data_size);
-        if(rflag == -1) {
-            perror("Unable to munmap.\n");
-            return -1;
-        }
+
+        free(col->data2);
         return 0;
     }
     return -1; 
@@ -582,63 +623,51 @@ char* get_tb_from_col(char* original) {
 
 // Helper function for indexing
 /**
- * Given array of sorted data, number of items
- * in array, and a val to find, lookup correct pos for val.
- **/
-
-int binary_search_with_offset(char* sorted_data, int num_items, char* val, int* offset) {
-    char* data_copy = strdup(sorted_data); // Make a copy because strsep modifies the string
-    if (!data_copy) return -1; // Memory allocation failed
-
-    char** lines = malloc(num_items * sizeof(char*));
-    int* offsets = malloc(num_items * sizeof(int));
-    if (!lines || !offsets) {
-        free(data_copy);
-        free(lines);
-        free(offsets);
-        return -1; // Memory allocation failed
+ * Given an array of sorted data in the form "TITLE\n45\n244\n..."
+ * and a value to find, determine the correct position for the value.
+ * The function returns the index at which the value should be inserted
+ * to maintain sorted order.
+ */
+int binary_search_insert_position(const char* sorted_data, int num_items, const char* val) {
+    if (num_items < 2) {
+        return 1;  // Invalid input or not enough items to search
     }
 
-    char* rest = data_copy;
-    char* line;
-    int line_index = 0;
-    int current_offset = 0;
-
-    while ((line = strsep(&rest, "\n")) != NULL) {
-        lines[line_index] = line;
-        offsets[line_index] = current_offset;
-        current_offset += strlen(line) + 1; // +1 for the newline character
-        line_index++;
-    }
-
-    int first = 0, last = num_items - 1, middle = 0;
-    *offset = -1; // Initialize offset to -1
+    int first = 1;  // Start after the title
+    int last = num_items - 1;  // Last line number
+    int middle, cmp;
+    char buffer[256]; // Assuming each line is less than 256 characters
 
     while (first <= last) {
         middle = (first + last) / 2;
-        int cmp = strncmp(lines[middle], val, strlen(val));
-        
+
+        // Extract the middle line
+        const char* start = sorted_data;
+        for (int i = 0; i < middle; i++) {
+            start = strchr(start, '\n');
+            if (!start) return -1;  // Error in data format
+            start++;  // Move past '\n'
+        }
+
+        const char* end = strchr(start, '\n');
+        if (!end) return -1;  // Error in data format
+        int len = end - start;
+        strncpy(buffer, start, len);
+        buffer[len] = '\0';
+
+        // Compare with the value
+        cmp = atoi(buffer) - atoi(val);
+
         if (cmp < 0) {
             first = middle + 1;
-        } else if (cmp == 0) {
-            *offset = offsets[middle];
-            break;
-        } else {
+        } else if (cmp > 0) {
             last = middle - 1;
+        } else {
+            return middle; // Exact match found
         }
     }
 
-    if (*offset == -1) { // if not found
-        *offset = (first < num_items) ? offsets[first] : current_offset;
-    }
-
-    int result = (middle < num_items && strcmp(lines[middle], val) == 0) ? middle : first;
-
-    free(data_copy);
-    free(lines);
-    free(offsets);
-
-    return result;
+    return first; // Position where the value should be inserted
 }
 
 /**
@@ -648,21 +677,32 @@ int binary_search_with_offset(char* sorted_data, int num_items, char* val, int* 
  */
 bool insert_at_pos_inplace(char* data, int data_max_len, int pos, char* val) {
     int data_len = strlen(data);
-    int val_len = strlen(val);
+    //int val_len = strlen(val);
 
     // Check if there's enough space to insert val and a newline character
+    /*
     if (data_len + val_len + 1 >= data_max_len) { // +1 for the newline character
         return false; // Not enough space
     }
+    */
 
-    // Move the existing characters to make room for val and the newline character
-    memmove(data + pos + val_len + 1, data + pos, data_len - pos + 1); // +1 to include the null terminator
+    char* full_val = malloc(256);
+    strcpy(full_val, val);
+    strcat(full_val, "\n");
 
-    // Insert val
-    memcpy(data + pos, val, val_len);
 
-    // Insert newline character after val
-    data[pos + val_len] = '\n';
+    if (pos == strlen(data)) {
+        strcat(data, val);
+        strcat(data, "\n");
+    }
+    else {
+        // Move the existing characters to make room for val and the newline character
+        memmove(data + pos + strlen(full_val), data + pos, data_len - pos); // +1 to include the null terminator
+
+        // Insert val
+        memcpy(data + pos, full_val, strlen(full_val));
+
+    }
 
     return true;
 }
@@ -1004,12 +1044,7 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
     // Initialize the rest of the file with null values
     memset(data + written_length, '\0', full_size - written_length);
 
-    int* data2 = mmap(NULL, full_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (data2 == MAP_FAILED) {
-        perror("Error mapping file");
-        close(fd);
-        return NULL;
-    }
+    int* data2 = malloc(full_size*sizeof(int));
 
     // add memory mapped column to catalogue
 
@@ -1022,6 +1057,7 @@ DbOperator* parse_create_col(char* create_arguments, CatalogEntry* variable_pool
     cat->data = data;
     cat->data2 = data2;
     cat->data_size = full_size;
+    cat->data2_size=full_size*sizeof(int);
     cat->is_column = true;
     cat->has_index = false;
     cat->num_lines = 1;
@@ -1272,15 +1308,12 @@ char* makePath(char* name, CreateType t) {
 
 
 DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool, ClientContext* context) {
-    // args needed 
-    char col_name[MAX_SIZE_NAME], index[strlen("sorted") + 1], clustered_arg[strlen("unclustered") + 1];
-    int num_args = sscanf(create_arguments, "%[^,],%[^,],%[^,]", col_name, index, clustered_arg);
-
-    // if didnt get all args
-    if (num_args != 3) {
-        perror("Incorrect number of args");
-        return NULL;
-    }
+    message_status status = OK_DONE;
+    char** create_arguments_index = &create_arguments;
+    char* col_name = next_token(create_arguments_index, &status);
+    char* index = next_token(create_arguments_index, &status);
+    char* clustered_arg = next_token(create_arguments_index, &status);
+    clustered_arg = trim_parenthesis(clustered_arg);
 
     IndexType index_type = NONE;
 
@@ -1312,6 +1345,9 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
 
     // Make pathname, then update catalog
     char* path = makePath(col_name, _COLUMN);
+    char* pathcopy = strdup(path);
+    char* pathcopy2 = strdup(path);
+    strcat(path, ".txt");
 
     // Update table in context using table name
     for (int i=0; i<context->num_tables; i++) {
@@ -1323,7 +1359,7 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
                 strcpy(curr_table->sort_col_path, path);
                 for (int i=0; i<curr_table->col_count; i++) {
                     CatalogEntry* col = curr_table->columns[i];
-                    if (strcmp(path, col->filepath) == 0) {
+                    if (strcmp(curr_table->sort_col_path, col->filepath) == 0) {
                         curr_table->sort_col_index=i;
                         break;
                     }
@@ -1340,7 +1376,8 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
     // Create actual files. And then create a memory mapped copy to add to the variable pool.
     // If vpool has a full column object then the name/filepath will have a .txt
 
-    char *ind_path = createIndexName(path);
+    char *ind_path = createIndexName(pathcopy2);
+    printf("%s is index name.\n", ind_path);
 
     // Attempt to create the directory if it doesn't exist
     if (mkdir("./idx", 0777) == -1) {
@@ -1351,38 +1388,6 @@ DbOperator* parse_create_idx(char* create_arguments, CatalogEntry* variable_pool
         }
     }
 
-    /*
-
-    int capacity = 10240; // No. of elements that the column can hold
-    int line_size = 1024; // Size of line
-    size_t full_size = capacity * line_size; // Total size for memory mapping
-
-    // Open the file with read and write permissions, create if it doesn't exist
-    int fd = open(ind_path, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    if (fd == -1) {
-        perror("Error opening file");
-        return NULL;
-    }
-
-    // Extend the file to the desired size
-    if (ftruncate(fd, full_size) == -1) {
-        perror("Error extending file size");
-        close(fd);
-        return NULL;
-    }
-
-
-    // Memory map the file
-    int* data = mmap(NULL, full_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (data == MAP_FAILED) {
-        perror("Error mapping file");
-        close(fd);
-        return NULL;
-    }
-
-    close(fd);
-
-    */
 
     // Create index object -> not sure of purpose yet
 
@@ -1552,6 +1557,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
         char** command_index = &query_command;
         // parse table input
         char* table_name = next_token(command_index, &send_message->status);
+
         //char* catname = getName(table_name);
         char* catpath = makePath(table_name, _TABLE);
 
@@ -1577,11 +1583,12 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
         char* val = token;
         int insert_pos = NULL; //num lines starts at 1 :(
         
-        char* valcopy = val;
 
-        // CURRENTLY, IF DATA IS CLUSTERED, I AM WORKING WITH INT* DATA2, IF NOT, CHAR* DATA
+        // CURRENTLY, IF DATA IS CLUSTERED, TRY TO WORK WITH DATA2 - THEN PUT INTO DATA1 AS CHAR*
 
         if (table_obj->clustered == true) {
+            token = query_command;
+            token = trim_parenthesis(token);
             fprintf(stdout, "DIFFERENT\n");
             CatalogEntry* target_col = get(variable_pool, table_obj->sort_col_path);
             if (target_col == NULL) {
@@ -1590,22 +1597,35 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
             }
             // get add position from this, and then add to each other in that position!! :)
             char* ins_val = get_nth_string(token, table_obj->sort_col_index);
-            int offset;
-            int insert_line = binary_search_with_offset(target_col->data, target_col->num_lines, ins_val, &offset);
-            //insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(val));
-            if (insert_line == NULL) {
-                perror("Binary search error");
+            //int insert_line = binary_search_insert_position(target_col->data, target_col->num_lines, ins_val);
+            insert_pos = binary_search(target_col->data2, target_col->num_lines-1, atoi(ins_val));
+            if (insert_pos == NULL) {
+                perror("Binary search error for binary search with offset");
                 return NULL;
             } 
             for (int i=0; i<table_obj->col_capacity; i++) {
                 CatalogEntry* current_col = table_obj->columns[i];
-
-                int insert_pos = get_offset_for_line(current_col->data, insert_line);
+   
+                //int insert_pos = get_offset_for_line(current_col->data, insert_line);
                 ins_val = get_nth_string(token,i);
                 current_col->num_lines++;
                 current_col->offset+=strlen(ins_val) + 1;
                 if (current_col->offset < current_col->data_size) {
-                    insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val); 
+                    if (current_col->num_lines*sizeof(int) < current_col->data2_size) {
+                        insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                    }
+                    else {
+                        int* data2copy = (int*) realloc(current_col->data2, current_col->data2_size *2);
+                        current_col->data2_size*=2;
+                        if (data2copy == NULL) {
+                            perror("Allocation failure");
+                            return NULL;
+                        } else {
+                            current_col->data2 = data2copy;
+                            insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                            }
+                    }
+                    //insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val); 
                 }
                 else {
                     int rflag = msync(current_col->data, current_col->data_size, MS_SYNC);
@@ -1641,12 +1661,82 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
                         return NULL;
                     }
                     current_col->data = datacopy;
-                    insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val);
+                    //insert_at_pos_inplace(current_col->data, current_col->data_size, insert_pos, ins_val);
+                    if (current_col->num_lines*sizeof(int) < current_col->data2_size) {
+                        insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                    }
+                    else {
+                        int* data2copy = (int*) realloc(current_col->data2, current_col->data2_size *2);
+                        current_col->data2_size*=2;
+                        if (data2copy == NULL) {
+                            perror("Allocation failure");
+                            return NULL;
+                        } else {
+                            current_col->data2 = data2copy;
+                            insert_at_pos(current_col->data2, current_col->num_lines-1, insert_pos, atoi(ins_val));
+                            }
+                    }
                 }
             } 
         }
         else {
             fprintf(stdout, "NORMAL\n");
+            token = query_command;
+            token = trim_parenthesis(token);
+            for (int i=0; i<table_obj->col_capacity; i++) {
+                CatalogEntry* current_col = table_obj->columns[i];
+                char* ins_val = get_nth_string(token,i);
+                char* full_val = malloc(256);
+                strcpy(full_val, ins_val);
+                strcat(full_val,"\n");
+                current_col->num_lines++;
+                current_col->offset+=strlen(ins_val) + 1;
+                if (current_col->offset < current_col->data_size) {
+                    strcat(current_col->data,full_val);
+                }
+                else {
+                    int rflag = msync(current_col->data, current_col->data_size, MS_SYNC);
+                    if(rflag == -1) {
+                        perror("Unable to msync.\n");
+                        return -1;
+                    }
+                    rflag = munmap(current_col->data, current_col->data_size);
+                    if(rflag == -1) {
+                        perror("Unable to munmap.\n");
+                        return -1;
+                    }
+                    current_col->data_size*=2;
+                    // Open the file with read and write permissions, create if it doesn't exist
+                    int fd = open(current_col->filepath, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+                    if (fd == -1) {
+                        perror("Error opening file");
+                        return NULL;
+                    }
+
+                    // Extend the file to the desired size
+                    if (ftruncate(fd, current_col->data_size) == -1) {
+                        perror("Error extending file size");
+                        close(fd);
+                        return NULL;
+                    }
+
+                    // Memory map the file
+                    char* datacopy = mmap(NULL, current_col->data_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                    if (datacopy == MAP_FAILED) {
+                        perror("Error mapping file");
+                        close(fd);
+                        return NULL;
+                    }
+                    current_col->data = datacopy;
+                    strcat(current_col->data,full_val);                
+                }
+
+            }
+
+
+
+
+            /*
             char* path = catpath;
             // find paths of columns within this table
             struct dirent *entry;
@@ -1668,6 +1758,7 @@ DbOperator* parse_insert(char* query_command, message* send_message, CatalogHash
             }
             free(catpath);
             closedir(dir);
+            */
         }
 
         DbOperator* dbo = malloc(sizeof(DbOperator));
@@ -1883,6 +1974,7 @@ void* threadFunction(void* arg) {
                     int* values = index->data;
                     int* positions = index->positions;
                     int rangeSize = threadArgs->endLine - threadArgs->startLine;
+                    memset(threadArgs->bitvector, INT_MIN, (threadArgs->endOffset - threadArgs->startOffset) * sizeof(int));
                     // startline-1 TO endline
 
                     int pos_low = binary_search_range(values, threadArgs->startLine-1, threadArgs->endLine, threadArgs->ilow);
@@ -1902,6 +1994,7 @@ void* threadFunction(void* arg) {
                     int* values = index->data;
                     int* positions = index->positions;
                     int rangeSize = threadArgs->endLine - threadArgs->startLine;
+                    memset(threadArgs->bitvector, INT_MIN, (threadArgs->endOffset - threadArgs->startOffset) * sizeof(int));
                     // startline-1 TO endline
 
                     int pos_low = binary_search_range(values, threadArgs->startLine-1, threadArgs->endLine, threadArgs->ilow);
@@ -1992,7 +2085,8 @@ void* threadFunction(void* arg) {
         // assume that both vectors are the same size (one is treated as a bit vector and one as val vector)
         for (int i=threadArgs->startLine; i<threadArgs->endLine; i++) {
             int val;
-            if (threadArgs->pvector[i] != INT_MIN && (threadArgs->vvector[i] > threadArgs->ilow && threadArgs->vvector[i] < threadArgs->ihigh)) {
+            if (threadArgs->pvector[i] != INT_MIN && (threadArgs->vvector[i] 
+                        >= threadArgs->ilow && threadArgs->vvector[i] < threadArgs->ihigh)) {
                 //fprintf(stdout, "%i IS between %i and %i. So line %i is a YES!\n", threadArgs->vvector[i], threadArgs->ilow, threadArgs->ihigh,i);
                 val = INT_MAX;
             }
@@ -2110,8 +2204,7 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
                     break;
                 }
                 default: break;
-            }
-            
+            }  
         }
 
        // open column file
@@ -2184,8 +2277,6 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
             args[i].ihigh = ihigh;
             args[i].ilow = ilow;
             args[i].bitvector = malloc((lineOffsets[nums[i+1]] - lineOffsets[nums[i]]) * sizeof(int));
-            // Initialize the array with INT_MIN using memset
-            memset(args[i].bitvector, INT_MIN, (lineOffsets[nums[i+1]] - lineOffsets[nums[i]]) * sizeof(int));
             // Initialize other necessary fields
 
             // Create the thread
@@ -2225,11 +2316,8 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
         }
 
         // TODO: GET RESULTS AND JOIN THEM
-        
-
 
         strcpy(cat->name, handle);
-
         cat->size = lineCount;
         cat->in_vpool = true;
         put(variable_pool, *cat);
@@ -2280,9 +2368,9 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
             args[i].ihigh = ihigh;
             args[i].ilow = ilow;
             //args[i].pvector = pvector->bitvector;
-            memcpy(args[i].pvector, pvector->bitvector, sizeof(pvector->bitvector));
+            memcpy(args[i].pvector, pvector->bitvector, (count * sizeof(int)));
             //args[i].vvector = vvector->bitvector;
-            memcpy(args[i].vvector, vvector->bitvector, sizeof(vvector->bitvector));
+            memcpy(args[i].vvector, vvector->bitvector, (count * sizeof(int)));
             // Initialize other necessary fields
             args[i].bitvector = malloc((count) * sizeof(int));
             //memcpy(args[i].bitvector, vvector->bitvector, count * sizeof(int));
@@ -2306,11 +2394,7 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
         int finalIndex = 0;
         for (int i = 0; i < threadCount; ++i) {
             pthread_join(threads[i], NULL);
-            /*
-            int segmentSize = nums[i+1] - nums[i];
-            memcpy(finalBitvector + finalIndex, args[i].bitvector, segmentSize * sizeof(int));
-            finalIndex += segmentSize;
-            */
+
             for (int j=args[i].startLine; j<args[i].endLine; ++j) {
                 if (args[i].bitvector[j] == INT_MAX) {
                     cat->bitvector[j] = INT_MAX;
@@ -2324,10 +2408,8 @@ DbOperator* parse_select_multithread(char* query_command, char* handle, message*
         }
 
         // TODO: GET RESULTS AND JOIN THEM
-        
-        
-
-        fprintf(stdout, "AM I HERE ?");
+    
+        //fprintf(stdout, "AM I HERE ?");
         strcpy(cat->name, handle);
         //memcpy(cat->bitvector, finalBitvector, (count * sizeof(int)));
         cat->size = count;
@@ -3219,6 +3301,7 @@ DbOperator* parse_add(char* query_command, char* handle, message* send_message, 
     strcpy(retvector->name, handle);
     retvector->size = count;
     retvector->in_vpool = true;
+    retvector->has_value = false;
 
     put(variable_pool, *retvector);
 
@@ -3267,6 +3350,7 @@ DbOperator* parse_sub(char* query_command, char* handle, message* send_message, 
     strcpy(retvector->name, handle);
     retvector->size = count;
     retvector->in_vpool = true;
+    retvector->has_value = false;
 
     put(variable_pool, *retvector);
 

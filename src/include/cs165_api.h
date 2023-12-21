@@ -285,6 +285,7 @@ typedef struct CatalogEntry {
     char* data; // This will point to the memory-mapped file or a string
     int* data2;
     size_t data_size; // Size of the data
+    size_t data2_size;
     int num_lines;
     int num_entries; // for int* implementation
     int offset;
